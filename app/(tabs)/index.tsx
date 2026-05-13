@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl } from 'react-native';
+import React, { useEffect, useState, useRef } from 'react';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Theme } from '../../constants/theme';
 import { Shield, MessageSquare, LogOut, ChevronRight, Circle, Lock } from 'lucide-react-native';
@@ -13,6 +13,7 @@ export default function ChatListScreen() {
   const [loading, setLoading] = useState(false);
   const [username, setUsername] = useState('');
   const router = useRouter();
+  const channelRef = useRef<any>(null);
 
   const fetchUsers = async () => {
     if (!session?.user) return;
@@ -46,30 +47,47 @@ export default function ChatListScreen() {
   useEffect(() => {
     fetchUsers();
 
-    if (!session?.user) return;
+    if (!session?.user?.id) return;
+    const channelId = 'online-users';
 
-    // Presence Channel
-    const channel = supabase.channel('online-users', {
-      config: { presence: { key: session.user.id } }
-    });
+    // 1. Cherche si le canal existe déjà (créé par un montage précédent)
+    let channel = supabase.getChannels().find(c => c.topic === channelId);
 
-    channel
-      .on('presence', { event: 'sync' }, () => {
-        const state = channel.presenceState();
-        const onlineIds = Object.keys(state);
-        setUsers(prev => prev.map(u => ({
-          ...u,
-          isOnline: onlineIds.includes(u.id)
-        })));
-      })
-      .subscribe(async (status) => {
-        if (status === 'SUBSCRIBED') {
-          await channel.track({ online_at: new Date().toISOString() });
-        }
+    // 2. Si le canal n'existe pas, on le crée
+    if (!channel) {
+      channel = supabase.channel(channelId, {
+        config: { presence: { key: session.user.id } }
       });
+    }
 
-    return () => { channel.unsubscribe(); };
-  }, [session]);
+    // 3. SEULEMENT s'il est 'closed' (pas encore abonné), on lance l'abonnement
+    // C'est ce qui évite l'erreur "cannot add presence callbacks after subscribe"
+    if (channel.state === 'closed') {
+      channel
+        .on('presence', { event: 'sync' }, () => {
+          if (!channelRef.current) return;
+          const state = channelRef.current.presenceState();
+          const onlineIds = Object.keys(state);
+          setUsers(prev => prev.map(u => ({
+            ...u,
+            isOnline: onlineIds.includes(u.id)
+          })));
+        })
+        .subscribe(async (status) => {
+          if (status === 'SUBSCRIBED' && channelRef.current) {
+            await channelRef.current.track({ online_at: new Date().toISOString() });
+          }
+        });
+    }
+
+    // 4. On stocke la référence du canal
+    channelRef.current = channel;
+
+    // Pas de nettoyage brutal ici pour éviter le "Strict Mode"
+    return () => {
+        // La destruction du canal sera gérée lors de la déconnexion globale du User
+    };
+  }, [session?.user?.id]);
 
   const handleLogout = async () => {
     await logout();
@@ -77,19 +95,34 @@ export default function ChatListScreen() {
   };
 
   const openChat = async (item: any) => {
-    const hasHardware = await LocalAuthentication.hasHardwareAsync();
-    if (hasHardware) {
-      const result = await LocalAuthentication.authenticateAsync({
-        promptMessage: `Unlock chat with ${item.username}`,
-        fallbackLabel: 'Enter Passcode'
-      });
-      if (!result.success) return;
-    }
+    try {
+      const hasHardware = await LocalAuthentication.hasHardwareAsync();
+      const isEnrolled = await LocalAuthentication.isEnrolledAsync();
 
-    router.push({
-      pathname: '/chat/[id]',
-      params: { id: item.id, username: item.username, publicKey: item.public_key }
-    });
+      if (hasHardware && isEnrolled) {
+        const result = await LocalAuthentication.authenticateAsync({
+          promptMessage: `Unlock ${item.username}`,
+          fallbackLabel: 'Use PIN/Passcode',
+          cancelLabel: 'Cancel',
+          disableDeviceFallback: false,
+        });
+
+        if (!result.success) {
+          // Si l'utilisateur annule, on ne fait rien (on reste sur la liste)
+          return;
+        }
+      }
+
+      // Si pas de biométrie configureé ou succès authentification
+      router.push({
+        pathname: '/chat/[id]',
+        params: { id: item.id, username: item.username, publicKey: item.public_key }
+      });
+    } catch (err) {
+      console.error('Bio-Lock error:', err);
+      // En cas d'erreur technique, on permet quand même l'accès ou on affiche une alerte
+      Alert.alert('Error', 'Security check failed. Please try again.');
+    }
   };
 
   const renderUser = ({ item }: { item: any }) => (

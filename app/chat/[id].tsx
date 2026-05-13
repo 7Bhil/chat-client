@@ -36,19 +36,26 @@ export default function ChatDetailScreen() {
 
   // 1. Screen Capture Protection
   useEffect(() => {
-    ScreenCapture.preventScreenCaptureAsync();
-    
-    const subscription = ScreenCapture.addScreenshotListener(() => {
-      Alert.alert(
-        'Security Warning',
-        'Capture detected! For security reasons, do not take screenshots of private conversations.',
-        [{ text: 'OK', style: 'destructive' }]
-      );
-    });
+    let subscription: any;
+    try {
+      ScreenCapture.preventScreenCaptureAsync().catch(err => console.warn('preventScreenCaptureAsync not supported:', err));
+      
+      subscription = ScreenCapture.addScreenshotListener(() => {
+        Alert.alert(
+          'Security Warning',
+          'Capture detected! For security reasons, do not take screenshots of private conversations.',
+          [{ text: 'OK', style: 'destructive' }]
+        );
+      });
+    } catch (err) {
+      console.warn("ScreenCapture not fully supported:", err);
+    }
 
     return () => { 
-      ScreenCapture.allowScreenCaptureAsync();
-      subscription.remove();
+      try {
+        ScreenCapture.allowScreenCaptureAsync().catch(() => {});
+        if (subscription) subscription.remove();
+      } catch (e) {}
     };
   }, []);
 
@@ -58,45 +65,71 @@ export default function ChatDetailScreen() {
     if (!session?.user || !id) return;
 
     const fetchHistory = async () => {
-      const { data, error } = await supabase
-        .from('messages')
-        .select('*')
-        .or(`and(sender_id.eq.${session.user.id},receiver_id.eq.${id}),and(sender_id.eq.${id},receiver_id.eq.${session.user.id})`)
-        .order('created_at', { ascending: true });
+      try {
+        const { data, error } = await supabase
+          .from('messages')
+          .select('*')
+          .or(`and(sender_id.eq.${session.user.id},receiver_id.eq.${id}),and(sender_id.eq.${id},receiver_id.eq.${session.user.id})`)
+          .order('created_at', { ascending: true });
 
-      if (error) return;
+        if (error) throw error;
 
-      const privKey = await getPrivateKey();
-      if (!privKey) return;
-      const sharedSecret = deriveSharedSecret(privKey, publicKey as string);
-
-      const processed = await Promise.all(data.map(async (msg, index) => {
-        const { messageKey } = calculateRatchetKey(sharedSecret, index);
-        let content = null;
-        
-        // Hide expired messages locally immediately
-        if (msg.expires_at && new Date(msg.expires_at) < new Date()) return null;
-
-        if (msg.type === 'image') {
-          content = await decryptFile(msg.encrypted_content, msg.nonce, messageKey);
-        } else {
-          content = await decryptWithRatchet(msg.encrypted_content, msg.nonce, messageKey);
-          if (!content) content = await decryptMessage(msg.encrypted_content, publicKey as string, privKey);
+        const privKey = await getPrivateKey();
+        if (!privKey) {
+            console.warn("Private key missing, cannot decrypt history.");
+            return;
         }
 
-        return {
-          id: msg.id,
-          text: content || '[Decryption Error]',
-          type: msg.type,
-          sender: msg.sender_id === session.user.id ? 'me' : 'other',
-          timestamp: msg.created_at,
-          isRead: msg.is_read,
-          expiresAt: msg.expires_at
-        };
-      }));
+        if (!publicKey) {
+            console.warn("Public key missing for this specific user. Maybe it's an old account?");
+            setMessages(data || []);
+            return;
+        }
 
-      setMessages(processed.filter(m => m !== null));
-      await supabase.from('messages').update({ is_read: true }).eq('receiver_id', session.user.id).eq('sender_id', id);
+        const sharedSecret = deriveSharedSecret(privKey, publicKey as string);
+
+        const processed = await Promise.all(data.map(async (msg, index) => {
+          try {
+            const { messageKey } = calculateRatchetKey(sharedSecret, index);
+            let content = null;
+            
+            // Hide expired messages locally immediately
+            if (msg.expires_at && new Date(msg.expires_at) < new Date()) return null;
+
+            if (msg.type === 'image') {
+              content = await decryptFile(msg.encrypted_content, msg.nonce, messageKey);
+            } else {
+              content = await decryptWithRatchet(msg.encrypted_content, msg.nonce, messageKey);
+              if (!content) content = await decryptMessage(msg.encrypted_content, publicKey as string, privKey);
+            }
+
+            return {
+              id: msg.id,
+              text: content || '[Decryption Error]',
+              type: msg.type,
+              sender: msg.sender_id === session.user.id ? 'me' : 'other',
+              timestamp: msg.created_at,
+              isRead: msg.is_read,
+              expiresAt: msg.expires_at
+            };
+          } catch (decErr) {
+            console.error("Message decryption error:", decErr);
+            return {
+              id: msg.id,
+              text: '[Encrypted Message]',
+              type: 'text',
+              sender: msg.sender_id === session.user.id ? 'me' : 'other',
+              timestamp: msg.created_at,
+              isRead: msg.is_read
+            };
+          }
+        }));
+
+        setMessages(processed.filter(m => m !== null));
+        await supabase.from('messages').update({ is_read: true }).eq('receiver_id', session.user.id).eq('sender_id', id);
+      } catch (err) {
+        console.error("fetchHistory error:", err);
+      }
     };
 
     fetchHistory();
@@ -180,13 +213,6 @@ export default function ChatDetailScreen() {
           <Text style={styles.headerUsername}>{username}</Text>
           <View style={styles.encryptionBadge}><Lock size={12} color={Theme.colors.primary} /><Text style={styles.encryptionText}>End-to-End Encrypted</Text></View>
         </View>
-        <TouchableOpacity 
-          onPress={() => setShowExpiryModal(true)} 
-          style={[styles.expiryBtn, expiry ? styles.expiryBtnActive : null]}
-        >
-          <Clock size={20} color={expiry ? Theme.colors.primary : Theme.colors.textSecondary} />
-          {expiry && <Text style={styles.expiryLabel}>{EXPIRY_OPTIONS.find(o => o.seconds === expiry)?.label}</Text>}
-        </TouchableOpacity>
         <TouchableOpacity onPress={() => setShowGallery(true)} style={styles.galleryBtn}>
           <LayoutGrid size={20} color={Theme.colors.text} />
         </TouchableOpacity>
@@ -210,7 +236,18 @@ export default function ChatDetailScreen() {
       )} contentContainerStyle={styles.messageList} onContentSizeChange={() => flatListRef.current?.scrollToEnd()} />
 
       <View style={styles.inputArea}>
-        <TouchableOpacity onPress={pickImage} style={styles.attachBtn}><ImageIcon size={24} color={Theme.colors.primary} /></TouchableOpacity>
+        <TouchableOpacity onPress={pickImage} style={styles.attachBtn}>
+          <ImageIcon size={24} color={Theme.colors.primary} />
+        </TouchableOpacity>
+        
+        <TouchableOpacity 
+          onPress={() => setShowExpiryModal(true)} 
+          style={[styles.bottomExpiryBtn, expiry ? styles.bottomExpiryBtnActive : null]}
+        >
+          <Clock size={20} color={expiry ? Theme.colors.primary : Theme.colors.textSecondary} />
+          {expiry && <Text style={styles.bottomExpiryLabel}>{EXPIRY_OPTIONS.find(o => o.seconds === expiry)?.label}</Text>}
+        </TouchableOpacity>
+
         <TextInput style={styles.input} placeholder="Type a secure message..." placeholderTextColor={Theme.colors.textSecondary} value={message} onChangeText={setMessage} multiline />
         <TouchableOpacity style={[styles.sendBtn, !message.trim() && styles.sendBtnDisabled]} onPress={() => handleSend()} disabled={!message.trim()}><Send size={20} color={Theme.colors.background} /></TouchableOpacity>
       </View>
@@ -275,9 +312,9 @@ const styles = StyleSheet.create({
   headerUsername: { fontSize: 18, fontWeight: '700', color: Theme.colors.text },
   encryptionBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
   encryptionText: { fontSize: 10, color: Theme.colors.primary, fontWeight: '600' },
-  expiryBtn: { padding: 8, flexDirection: 'row', alignItems: 'center', gap: 4 },
-  expiryBtnActive: { backgroundColor: 'rgba(0, 255, 255, 0.1)', borderRadius: 12 },
-  expiryLabel: { fontSize: 12, color: Theme.colors.primary, fontWeight: 'bold' },
+  bottomExpiryBtn: { padding: 10, flexDirection: 'row', alignItems: 'center', gap: 4, marginRight: Theme.spacing.sm },
+  bottomExpiryBtnActive: { backgroundColor: 'rgba(0, 255, 255, 0.1)', borderRadius: 12 },
+  bottomExpiryLabel: { fontSize: 12, color: Theme.colors.primary, fontWeight: 'bold' },
   messageList: { padding: Theme.spacing.md, paddingBottom: Theme.spacing.xl },
   messageContainer: { maxWidth: '80%', padding: Theme.spacing.md, borderRadius: Theme.borderRadius.lg, marginBottom: Theme.spacing.sm, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 4, elevation: 2 },
   myMessage: { alignSelf: 'flex-end', backgroundColor: Theme.colors.primary, borderBottomRightRadius: 2 },

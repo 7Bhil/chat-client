@@ -15,6 +15,8 @@ export default function SignupScreen() {
   const {  } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [passcode, setPasscode] = useState('');
+  const [usePasscode, setUsePasscode] = useState(false);
   const [useBiometrics, setUseBiometrics] = useState(false);
   const [hasBiometrics, setHasBiometrics] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -31,6 +33,11 @@ export default function SignupScreen() {
   const handleSignup = async () => {
     if (!username || !password) {
       Alert.alert('Error', 'Please fill all fields');
+      return;
+    }
+
+    if (usePasscode && passcode.length < 4) {
+      Alert.alert('Error', 'Passcode must be at least 4 digits');
       return;
     }
 
@@ -53,7 +60,12 @@ export default function SignupScreen() {
       // 2. Store Private Key SECURELY on device
       await storePrivateKey(keys.privateKey);
       
-      // 3. Store biometric preference
+      // 3. Store security preferences
+      if (usePasscode) {
+        await SecureStore.setItemAsync('app_passcode', passcode);
+        await SecureStore.setItemAsync('usePasscode', 'true');
+      }
+
       if (useBiometrics) {
         await SecureStore.setItemAsync('useBiometrics', 'true');
       }
@@ -143,6 +155,35 @@ export default function SignupScreen() {
                 onValueChange={setUseBiometrics}
                 trackColor={{ false: '#334155', true: Theme.colors.primary }}
                 thumbColor={useBiometrics ? '#fff' : '#94a3b8'}
+              />
+            </View>
+          )}
+
+          <View style={styles.biometricRow}>
+            <View style={styles.biometricLabel}>
+              <Lock size={20} color={Theme.colors.primary} />
+              <Text style={styles.biometricText}>App Passcode (PIN)</Text>
+            </View>
+            <Switch
+              value={usePasscode}
+              onValueChange={setUsePasscode}
+              trackColor={{ false: '#334155', true: Theme.colors.primary }}
+              thumbColor={usePasscode ? '#fff' : '#94a3b8'}
+            />
+          </View>
+
+          {usePasscode && (
+            <View style={styles.inputContainer}>
+              <Key size={20} color={Theme.colors.textSecondary} style={styles.inputIcon} />
+              <TextInput
+                style={styles.input}
+                placeholder="Enter 4-6 digit PIN"
+                placeholderTextColor={Theme.colors.textSecondary}
+                value={passcode}
+                onChangeText={setPasscode}
+                keyboardType="numeric"
+                secureTextEntry
+                maxLength={6}
               />
             </View>
           )}

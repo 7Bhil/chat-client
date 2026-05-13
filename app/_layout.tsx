@@ -17,11 +17,14 @@ function RootLayoutNav() {
   useEffect(() => {
     if (isLoading) return;
 
-    const inAuthGroup = segments[0] === '(tabs)';
+    const isAuthRoute = segments[0] === '(tabs)' || segments[0] === 'chat';
+    const isPublicRoute = segments[0] === 'login' || segments[0] === 'signup';
 
-    if (!isAuthenticated && inAuthGroup) {
+    if (!isAuthenticated && isAuthRoute) {
+      // Redirige vers login si non connecté mais essaie d'accéder à (tabs) ou chat
       router.replace('/login');
-    } else if (isAuthenticated && !inAuthGroup) {
+    } else if (isAuthenticated && isPublicRoute) {
+      // Redirige vers l'accueil si connecté mais essaie d'accéder aux pages publiques
       router.replace('/(tabs)');
     }
 
