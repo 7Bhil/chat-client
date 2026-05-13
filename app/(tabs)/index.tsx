@@ -2,9 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Theme } from '../../constants/theme';
-import { Shield, MessageSquare, LogOut, ChevronRight } from 'lucide-react-native';
+import { Shield, MessageSquare, LogOut, ChevronRight, Circle, Lock } from 'lucide-react-native';
 import { useAuth } from '../../utils/AuthContext';
 import { supabase } from '../../utils/supabase';
+import * as LocalAuthentication from 'expo-local-authentication';
 
 export default function ChatListScreen() {
   const [users, setUsers] = useState<any[]>([]);
@@ -44,6 +45,30 @@ export default function ChatListScreen() {
 
   useEffect(() => {
     fetchUsers();
+
+    if (!session?.user) return;
+
+    // Presence Channel
+    const channel = supabase.channel('online-users', {
+      config: { presence: { key: session.user.id } }
+    });
+
+    channel
+      .on('presence', { event: 'sync' }, () => {
+        const state = channel.presenceState();
+        const onlineIds = Object.keys(state);
+        setUsers(prev => prev.map(u => ({
+          ...u,
+          isOnline: onlineIds.includes(u.id)
+        })));
+      })
+      .subscribe(async (status) => {
+        if (status === 'SUBSCRIBED') {
+          await channel.track({ online_at: new Date().toISOString() });
+        }
+      });
+
+    return () => { channel.unsubscribe(); };
   }, [session]);
 
   const handleLogout = async () => {
@@ -51,20 +76,37 @@ export default function ChatListScreen() {
     router.replace('/login');
   };
 
+  const openChat = async (item: any) => {
+    const hasHardware = await LocalAuthentication.hasHardwareAsync();
+    if (hasHardware) {
+      const result = await LocalAuthentication.authenticateAsync({
+        promptMessage: `Unlock chat with ${item.username}`,
+        fallbackLabel: 'Enter Passcode'
+      });
+      if (!result.success) return;
+    }
+
+    router.push({
+      pathname: '/chat/[id]',
+      params: { id: item.id, username: item.username, publicKey: item.public_key }
+    });
+  };
+
   const renderUser = ({ item }: { item: any }) => (
     <TouchableOpacity 
       style={styles.userCard}
-      onPress={() => router.push({
-        pathname: '/chat/[id]',
-        params: { id: item.id, username: item.username, publicKey: item.public_key }
-      })}
+      onPress={() => openChat(item)}
     >
       <View style={styles.avatar}>
         <Text style={styles.avatarText}>{item.username[0].toUpperCase()}</Text>
+        {item.isOnline && <View style={styles.onlineIndicator} />}
       </View>
       <View style={styles.userInfo}>
-        <Text style={styles.username}>{item.username}</Text>
-        <Text style={styles.userStatus}>Tap to start secure chat</Text>
+        <View style={styles.usernameRow}>
+          <Text style={styles.username}>{item.username}</Text>
+          <Lock size={12} color={Theme.colors.textSecondary} style={{marginLeft: 4, opacity: 0.5}} />
+        </View>
+        <Text style={styles.userStatus}>{item.isOnline ? 'Online now' : 'Tap to start secure chat'}</Text>
       </View>
       <ChevronRight size={20} color={Theme.colors.textSecondary} />
     </TouchableOpacity>
@@ -179,6 +221,21 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: Theme.colors.textSecondary,
     marginTop: 2,
+  },
+  onlineIndicator: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: '#4ade80',
+    borderWidth: 2,
+    borderColor: Theme.colors.surface,
+  },
+  usernameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   emptyState: {
     flex: 1,
