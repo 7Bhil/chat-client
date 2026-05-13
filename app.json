@@ -37,11 +37,19 @@
             "backgroundColor": "#000000"
           }
         }
-      ]
+      ],
+      "expo-secure-store"
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "30bfff2b-343f-4714-8117-97b5cef922f9"
+      }
+    },
+    "owner": "7bhil"
   }
 }
