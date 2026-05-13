@@ -6,7 +6,7 @@ import { decryptMessage, deriveSharedSecret, calculateRatchetKey, encryptWithRat
 import { getPrivateKey } from '../../utils/api';
 import { useAuth } from '../../utils/AuthContext';
 import { supabase } from '../../utils/supabase';
-import { Shield, Send, ArrowLeft, Lock, Image as ImageIcon, Clock, Trash2 } from 'lucide-react-native';
+import { Shield, Send, ArrowLeft, Lock, Image as ImageIcon, Clock, Trash2, LayoutGrid, X } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as ScreenCapture from 'expo-screen-capture';
 
@@ -26,6 +26,7 @@ export default function ChatDetailScreen() {
   const [messages, setMessages] = useState<any[]>([]);
   const [expiry, setExpiry] = useState<number | null>(null);
   const [showExpiryModal, setShowExpiryModal] = useState(false);
+  const [showGallery, setShowGallery] = useState(false);
   const { session } = useAuth();
   const router = useRouter();
   const flatListRef = useRef<FlatList>(null);
@@ -180,6 +181,9 @@ export default function ChatDetailScreen() {
           <Clock size={20} color={expiry ? Theme.colors.primary : Theme.colors.textSecondary} />
           {expiry && <Text style={styles.expiryLabel}>{EXPIRY_OPTIONS.find(o => o.seconds === expiry)?.label}</Text>}
         </TouchableOpacity>
+        <TouchableOpacity onPress={() => setShowGallery(true)} style={styles.galleryBtn}>
+          <LayoutGrid size={20} color={Theme.colors.text} />
+        </TouchableOpacity>
       </View>
 
       <FlatList ref={flatListRef} data={messages} keyExtractor={(item) => item.id} renderItem={({item}) => (
@@ -210,6 +214,28 @@ export default function ChatDetailScreen() {
             ))}
           </View>
         </Pressable>
+      </Modal>
+
+      <Modal visible={showGallery} animationType="slide">
+        <View style={styles.galleryContainer}>
+          <View style={styles.galleryHeader}>
+            <TouchableOpacity onPress={() => setShowGallery(false)}><X size={24} color={Theme.colors.text} /></TouchableOpacity>
+            <Text style={styles.galleryTitle}>Shared Media</Text>
+            <View style={{width: 24}} />
+          </View>
+          <FlatList
+            data={messages.filter(m => m.type === 'image')}
+            keyExtractor={(item) => item.id}
+            numColumns={3}
+            renderItem={({item}) => (
+              <Image source={{ uri: `data:image/jpeg;base64,${item.text}` }} style={styles.galleryImage} />
+            )}
+            contentContainerStyle={styles.galleryList}
+            ListEmptyComponent={
+              <View style={styles.emptyGallery}><ImageIcon size={48} color={Theme.colors.textSecondary} /><Text style={styles.emptyText}>No media shared yet</Text></View>
+            }
+          />
+        </View>
       </Modal>
     </KeyboardAvoidingView>
   );
@@ -248,5 +274,12 @@ const styles = StyleSheet.create({
   optionBtn: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: Theme.colors.border },
   optionText: { color: Theme.colors.textSecondary, fontSize: 16, textAlign: 'center' },
   optionTextActive: { color: Theme.colors.primary, fontWeight: 'bold' },
+  galleryBtn: { padding: 8, marginLeft: 4 },
+  galleryContainer: { flex: 1, backgroundColor: Theme.colors.background },
+  galleryHeader: { paddingTop: 60, paddingHorizontal: 20, paddingBottom: 20, backgroundColor: Theme.colors.surface, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  galleryTitle: { fontSize: 18, fontWeight: 'bold', color: Theme.colors.text },
+  galleryList: { padding: 2 },
+  galleryImage: { width: '33%', aspectRatio: 1, margin: 1, borderRadius: 4 },
+  emptyGallery: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 100 },
 });
 
