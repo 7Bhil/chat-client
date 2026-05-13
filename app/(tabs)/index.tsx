@@ -20,21 +20,37 @@ export default function ChatListScreen() {
     
     setLoading(true);
     try {
-      const { data, error } = await supabase
+      const { data: profiles, error } = await supabase
         .from('profiles')
         .select('*')
-        .neq('id', session.user.id); // Ne pas s'afficher soi-même
+        .neq('id', session.user.id);
 
       if (error) throw error;
-      setUsers(data || []);
 
-      // Fetch current user's profile to get username
-      const { data: myProfile } = await supabase
-        .from('profiles')
-        .select('username')
-        .eq('id', session.user.id)
-        .single();
-      
+      // Récupère l'historique des messages pour déterminer le tri et les non-lus
+      const { data: messages } = await supabase
+        .from('messages')
+        .select('sender_id, receiver_id, created_at, is_read')
+        .or(`sender_id.eq.${session.user.id},receiver_id.eq.${session.user.id}`);
+
+      const processedProfiles = (profiles || []).map(profile => {
+        const chatMessages = messages?.filter(m => m.sender_id === profile.id || m.receiver_id === profile.id) || [];
+        // Trouve le timestamp du dernier message (soit reçu, soit envoyé)
+        const latestMsg = chatMessages.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
+        
+        // Compte les messages non lus envoyés par CE profil
+        const unreadCount = chatMessages.filter(m => m.sender_id === profile.id && !m.is_read).length;
+
+        return {
+          ...profile,
+          latestInteraction: latestMsg ? new Date(latestMsg.created_at).getTime() : 0,
+          unreadCount
+        };
+      }).sort((a, b) => b.latestInteraction - a.latestInteraction);
+
+      setUsers(processedProfiles);
+
+      const { data: myProfile } = await supabase.from('profiles').select('username').eq('id', session.user.id).single();
       if (myProfile) setUsername(myProfile.username);
 
     } catch (error) {
@@ -83,9 +99,34 @@ export default function ChatListScreen() {
     // 4. On stocke la référence du canal
     channelRef.current = channel;
 
-    // Pas de nettoyage brutal ici pour éviter le "Strict Mode"
+    // 5. Écoute globale des nouveaux messages pour incrémenter les "non lus"
+    // et faire remonter immédiatement le profil en haut de la liste
+    const globalMessagesChannel = supabase.channel('global-messages')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `receiver_id=eq.${session.user.id}` }, (payload) => {
+         setUsers(prev => {
+            const senderId = payload.new.sender_id;
+            return [...prev].map(u => {
+               if (u.id === senderId) {
+                  return { 
+                    ...u, 
+                    latestInteraction: new Date().getTime(), 
+                    unreadCount: (u.unreadCount || 0) + 1 
+                  };
+               }
+               return u;
+            }).sort((a, b) => b.latestInteraction - a.latestInteraction);
+         });
+      })
+      // Pour annuler le unreadCount si on ferme le chat
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages', filter: `receiver_id=eq.${session.user.id}` }, (payload) => {
+         if (payload.new.is_read) {
+           setUsers(prev => prev.map(u => u.id === payload.new.sender_id ? { ...u, unreadCount: Math.max(0, (u.unreadCount || 1) - 1) } : u));
+         }
+      })
+      .subscribe();
+
     return () => {
-        // La destruction du canal sera gérée lors de la déconnexion globale du User
+        supabase.removeChannel(globalMessagesChannel);
     };
   }, [session?.user?.id]);
 
@@ -94,12 +135,15 @@ export default function ChatListScreen() {
     router.replace('/login');
   };
 
-  const openChat = async (item: any) => {
-    try {
-      const hasHardware = await LocalAuthentication.hasHardwareAsync();
-      const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+    const openChat = async (item: any) => {
+      // Efface immédiatement la pastille des non-lus en local
+      setUsers(prev => prev.map(u => u.id === item.id ? { ...u, unreadCount: 0 } : u));
 
-      if (hasHardware && isEnrolled) {
+      try {
+        const hasHardware = await LocalAuthentication.hasHardwareAsync();
+        const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+
+        if (hasHardware && isEnrolled) {
         const result = await LocalAuthentication.authenticateAsync({
           promptMessage: `Unlock ${item.username}`,
           fallbackLabel: 'Use PIN/Passcode',
@@ -136,12 +180,23 @@ export default function ChatListScreen() {
       </View>
       <View style={styles.userInfo}>
         <View style={styles.usernameRow}>
-          <Text style={styles.username}>{item.username}</Text>
+          <Text style={[styles.username, item.unreadCount > 0 && styles.usernameUnread]}>{item.username}</Text>
           <Lock size={12} color={Theme.colors.textSecondary} style={{marginLeft: 4, opacity: 0.5}} />
         </View>
-        <Text style={styles.userStatus}>{item.isOnline ? 'Online now' : 'Tap to start secure chat'}</Text>
+        <Text style={[styles.userStatus, item.unreadCount > 0 && styles.statusUnread]}>
+          {item.unreadCount > 0 
+            ? 'New encrypted message' 
+            : (item.isOnline ? 'Online now' : 'Tap to start secure chat')}
+        </Text>
       </View>
-      <ChevronRight size={20} color={Theme.colors.textSecondary} />
+      
+      {item.unreadCount > 0 ? (
+        <View style={styles.unreadBadge}>
+          <Text style={styles.unreadBadgeText}>{item.unreadCount}</Text>
+        </View>
+      ) : (
+        <ChevronRight size={20} color={Theme.colors.textSecondary} />
+      )}
     </TouchableOpacity>
   );
 
@@ -281,5 +336,27 @@ const styles = StyleSheet.create({
     marginTop: Theme.spacing.md,
     fontSize: 16,
   },
+  usernameUnread: {
+    color: '#fff',
+    fontWeight: '900',
+  },
+  statusUnread: {
+    color: Theme.colors.primary,
+    fontWeight: '700',
+  },
+  unreadBadge: {
+    backgroundColor: Theme.colors.primary,
+    minWidth: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+  },
+  unreadBadgeText: {
+    color: Theme.colors.background,
+    fontSize: 12,
+    fontWeight: 'bold',
+  }
 });
 

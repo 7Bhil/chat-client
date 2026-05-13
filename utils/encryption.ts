@@ -107,52 +107,48 @@ export const decryptWithRatchet = async (
 };
 
 /**
- * Standard Box Encryption (Initial handshake / Legacy)
+ * Standard Stateless Box Encryption
+ * Uses nacl.box which handles the DH key exchange and secretbox internally.
+ * This is 100% robust and cannot be desynchronized.
  */
-export const encryptMessage = async (
+export const encryptStandard = async (
   message: string,
   recipientPublicKey: string,
   senderPrivateKey: string
-): Promise<string> => {
-  const pubKey = decodeBase64(recipientPublicKey);
-  const privKey = decodeBase64(senderPrivateKey);
+): Promise<{ encrypted: string; nonce: string }> => {
   const nonce = nacl.randomBytes(nacl.box.nonceLength);
-  const messageUint8 = stringToUint8(message);
-  
-  const encrypted = nacl.box(messageUint8, nonce, pubKey, privKey);
-  const combined = new Uint8Array(nonce.length + encrypted.length);
-  combined.set(nonce);
-  combined.set(encrypted, nonce.length);
-  
-  return encodeBase64(combined);
+  const encrypted = nacl.box(
+    stringToUint8(message), 
+    nonce, 
+    decodeBase64(recipientPublicKey), 
+    decodeBase64(senderPrivateKey)
+  );
+  return { encrypted: encodeBase64(encrypted), nonce: encodeBase64(nonce) };
 };
 
-/**
- * Standard Box Decryption
- */
-export const decryptMessage = async (
-  encryptedMessageBase64: string,
+export const decryptStandard = async (
+  encryptedBase64: string,
+  nonceBase64: string,
   senderPublicKey: string,
   recipientPrivateKey: string
 ): Promise<string | null> => {
   try {
-    const combined = decodeBase64(encryptedMessageBase64);
-    const pubKey = decodeBase64(senderPublicKey);
-    const privKey = decodeBase64(recipientPrivateKey);
-    
-    if (combined.length < nacl.box.nonceLength) return null;
-    
-    const nonce = combined.slice(0, nacl.box.nonceLength);
-    const encrypted = combined.slice(nacl.box.nonceLength);
-    
-    const decrypted = nacl.box.open(encrypted, nonce, pubKey, privKey);
+    const decrypted = nacl.box.open(
+      decodeBase64(encryptedBase64),
+      decodeBase64(nonceBase64),
+      decodeBase64(senderPublicKey),
+      decodeBase64(recipientPrivateKey)
+    );
     return decrypted ? uint8ToString(decrypted) : null;
   } catch (error) {
-    console.error('Decryption failed:', error);
     return null;
   }
 };
+
 /**
+ * Standard Box Encryption (Legacy single-string payload)
+ */
+/*
  * Binary Encryption for Files/Images
  */
 export const encryptFile = async (

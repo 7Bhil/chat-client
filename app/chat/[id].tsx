@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, TextInput, FlatList, KeyboardAvoidingView, Platform, TouchableOpacity, Alert, Image, Modal, Pressable } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Theme } from '../../constants/theme';
-import { decryptMessage, deriveSharedSecret, calculateRatchetKey, encryptWithRatchet, decryptWithRatchet, encryptFile, decryptFile } from '../../utils/encryption';
+import { deriveSharedSecret, encryptFile, decryptFile, encryptStandard, decryptStandard } from '../../utils/encryption';
 import { getPrivateKey } from '../../utils/api';
 import { useAuth } from '../../utils/AuthContext';
 import { supabase } from '../../utils/supabase';
@@ -88,19 +88,18 @@ export default function ChatDetailScreen() {
 
         const sharedSecret = deriveSharedSecret(privKey, publicKey as string);
 
-        const processed = await Promise.all(data.map(async (msg, index) => {
+        const processed = await Promise.all(data.map(async (msg) => {
           try {
-            const { messageKey } = calculateRatchetKey(sharedSecret, index);
             let content = null;
             
             // Hide expired messages locally immediately
             if (msg.expires_at && new Date(msg.expires_at) < new Date()) return null;
 
             if (msg.type === 'image') {
-              content = await decryptFile(msg.encrypted_content, msg.nonce, messageKey);
+              // File encryption still uses sharedSecret (secretbox)
+              content = await decryptFile(msg.encrypted_content, msg.nonce, sharedSecret);
             } else {
-              content = await decryptWithRatchet(msg.encrypted_content, msg.nonce, messageKey);
-              if (!content) content = await decryptMessage(msg.encrypted_content, publicKey as string, privKey);
+              content = await decryptStandard(msg.encrypted_content, msg.nonce, publicKey as string, privKey);
             }
 
             return {
@@ -141,10 +140,9 @@ export default function ChatDetailScreen() {
         const privKey = await getPrivateKey();
         if (privKey) {
           const sharedSecret = deriveSharedSecret(privKey, publicKey as string);
-          const { messageKey } = calculateRatchetKey(sharedSecret, messages.length);
           let decrypted = payload.new.type === 'image' 
-            ? await decryptFile(payload.new.encrypted_content, payload.new.nonce, messageKey)
-            : await decryptWithRatchet(payload.new.encrypted_content, payload.new.nonce, messageKey);
+            ? await decryptFile(payload.new.encrypted_content, payload.new.nonce, sharedSecret)
+            : await decryptStandard(payload.new.encrypted_content, payload.new.nonce, publicKey as string, privKey);
 
           setMessages(prev => [...prev, {
             id: payload.new.id, text: decrypted || '[Decryption Error]', type: payload.new.type, sender: 'other', timestamp: payload.new.created_at, expiresAt: payload.new.expires_at
@@ -177,11 +175,10 @@ export default function ChatDetailScreen() {
     try {
       const privKey = await getPrivateKey();
       const sharedSecret = deriveSharedSecret(privKey!, publicKey as string);
-      const { messageKey } = calculateRatchetKey(sharedSecret, messages.length);
 
       const { encrypted, nonce } = type === 'image' 
-        ? await encryptFile(content, messageKey)
-        : await encryptWithRatchet(content, messageKey);
+        ? await encryptFile(content, sharedSecret)
+        : await encryptStandard(content, publicKey as string, privKey!);
 
       const expiresAt = expiry ? new Date(Date.now() + expiry * 1000).toISOString() : null;
 
