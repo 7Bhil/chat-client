@@ -2,21 +2,39 @@ import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Theme } from '../../constants/theme';
-import { api, getUser } from '../../utils/api';
 import { Shield, MessageSquare, LogOut, ChevronRight } from 'lucide-react-native';
-import * as SecureStore from 'expo-secure-store';
+import { useAuth } from '../../utils/AuthContext';
+import { supabase } from '../../utils/supabase';
 
 export default function ChatListScreen() {
   const [users, setUsers] = useState<any[]>([]);
-  const [currentUser, setCurrentUser] = useState<any>(null);
+  const { session, logout } = useAuth();
   const [loading, setLoading] = useState(false);
+  const [username, setUsername] = useState('');
   const router = useRouter();
 
   const fetchUsers = async () => {
+    if (!session?.user) return;
+    
     setLoading(true);
     try {
-      const response = await api.get('/users');
-      setUsers(response.data);
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .neq('id', session.user.id); // Ne pas s'afficher soi-même
+
+      if (error) throw error;
+      setUsers(data || []);
+
+      // Fetch current user's profile to get username
+      const { data: myProfile } = await supabase
+        .from('profiles')
+        .select('username')
+        .eq('id', session.user.id)
+        .single();
+      
+      if (myProfile) setUsername(myProfile.username);
+
     } catch (error) {
       console.error('Failed to fetch users:', error);
     } finally {
@@ -26,12 +44,10 @@ export default function ChatListScreen() {
 
   useEffect(() => {
     fetchUsers();
-    getUser().then(setCurrentUser);
-  }, []);
+  }, [session]);
 
   const handleLogout = async () => {
-    await SecureStore.deleteItemAsync('token');
-    await SecureStore.deleteItemAsync('user');
+    await logout();
     router.replace('/login');
   };
 
@@ -40,7 +56,7 @@ export default function ChatListScreen() {
       style={styles.userCard}
       onPress={() => router.push({
         pathname: '/chat/[id]',
-        params: { id: item._id, username: item.username, publicKey: item.publicKey }
+        params: { id: item.id, username: item.username, publicKey: item.public_key }
       })}
     >
       <View style={styles.avatar}>
@@ -66,12 +82,12 @@ export default function ChatListScreen() {
             <LogOut size={20} color={Theme.colors.error} />
           </TouchableOpacity>
         </View>
-        <Text style={styles.welcomeText}>Welcome, {currentUser?.username}</Text>
+        <Text style={styles.welcomeText}>Welcome, {username || 'Secure User'}</Text>
       </View>
 
       <FlatList
         data={users}
-        keyExtractor={(item) => item._id}
+        keyExtractor={(item) => item.id}
         renderItem={renderUser}
         contentContainerStyle={styles.listContent}
         refreshControl={
@@ -176,3 +192,4 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
 });
+

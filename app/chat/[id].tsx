@@ -2,84 +2,144 @@ import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, TextInput, FlatList, KeyboardAvoidingView, Platform, TouchableOpacity, Alert } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Theme } from '../../constants/theme';
-import { encryptMessage, decryptMessage } from '../../utils/encryption';
-import { getPrivateKey, getUser } from '../../utils/api';
-import { useSocket } from '../../utils/SocketContext';
+import { decryptMessage, deriveSharedSecret, calculateRatchetKey, encryptWithRatchet, decryptWithRatchet } from '../../utils/encryption';
+import { getPrivateKey } from '../../utils/api';
+import { useAuth } from '../../utils/AuthContext';
+import { supabase } from '../../utils/supabase';
 import { Shield, Send, ArrowLeft, Lock } from 'lucide-react-native';
 
 export default function ChatDetailScreen() {
   const { id, username, publicKey } = useLocalSearchParams();
   const [message, setMessage] = useState('');
   const [messages, setMessages] = useState<any[]>([]);
-  const { socket } = useSocket();
-  const [currentUser, setCurrentUser] = useState<any>(null);
+  const { session } = useAuth();
   const router = useRouter();
   const flatListRef = useRef<FlatList>(null);
 
+  // 1. Fetch History and setup Realtime
   useEffect(() => {
-    getUser().then(setCurrentUser);
-  }, []);
+    if (!session?.user || !id) return;
 
-  useEffect(() => {
-    if (!socket) return;
+    const fetchHistory = async () => {
+      const { data, error } = await supabase
+        .from('messages')
+        .select('*')
+        .or(`and(sender_id.eq.${session.user.id},receiver_id.eq.${id}),and(sender_id.eq.${id},receiver_id.eq.${session.user.id})`)
+        .order('created_at', { ascending: true });
 
-    const handleNewMessage = async (data: any) => {
-      // data: { from, encryptedMessage, timestamp }
-      if (data.from !== id) return;
+      if (error) return;
 
       const privKey = await getPrivateKey();
       if (!privKey) return;
 
-      const decrypted = await decryptMessage(data.encryptedMessage, publicKey as string, privKey);
-      if (decrypted) {
-        setMessages(prev => [...prev, {
-          id: Date.now().toString(),
-          text: decrypted,
-          sender: 'other',
-          timestamp: data.timestamp
-        }]);
-      }
+      // Setup Ratchet base
+      const sharedSecret = deriveSharedSecret(privKey, publicKey as string);
+
+      const processedMessages = await Promise.all(data.map(async (msg, index) => {
+        // Simple Ratchet logic using the message index in history
+        const { messageKey } = calculateRatchetKey(sharedSecret, index);
+        
+        // Try Ratchet decryption first
+        let text = await decryptWithRatchet(msg.encrypted_content, msg.nonce, messageKey);
+        
+        // Fallback to standard box for old messages
+        if (!text) {
+          text = await decryptMessage(msg.encrypted_content, publicKey as string, privKey);
+        }
+
+        return {
+          id: msg.id,
+          text: text || '[Decryption Error]',
+          sender: msg.sender_id === session.user.id ? 'me' : 'other',
+          timestamp: msg.created_at
+        };
+      }));
+
+      setMessages(processedMessages);
     };
 
-    socket.on('new_message', handleNewMessage);
+    fetchHistory();
+
+    const channel = supabase
+      .channel(`chat:${id}`)
+      .on('postgres_changes', { 
+        event: 'INSERT', 
+        schema: 'public', 
+        table: 'messages',
+        filter: `receiver_id=eq.${session.user.id}` 
+      }, async (payload) => {
+        if (payload.new.sender_id !== id) return;
+
+        const privKey = await getPrivateKey();
+        if (privKey) {
+          const sharedSecret = deriveSharedSecret(privKey, publicKey as string);
+          
+          // Current strategy: Use a timestamp-based or count-based index
+          // For simplicity, we use the messages length
+          const { messageKey } = calculateRatchetKey(sharedSecret, messages.length);
+          
+          let decrypted = await decryptWithRatchet(payload.new.encrypted_content, payload.new.nonce, messageKey);
+          
+          // Fallback
+          if (!decrypted) {
+            decrypted = await decryptMessage(payload.new.encrypted_content, publicKey as string, privKey);
+          }
+
+          setMessages(prev => [...prev, {
+            id: payload.new.id,
+            text: decrypted || '[Decryption Error]',
+            sender: 'other',
+            timestamp: payload.new.created_at
+          }]);
+        }
+      })
+      .subscribe();
+
     return () => {
-      socket.off('new_message');
+      supabase.removeChannel(channel);
     };
-  }, [socket, id, publicKey]);
+  }, [session, id, publicKey, messages.length]);
 
   const handleSend = async () => {
-    if (!message.trim() || !socket || !currentUser) return;
+    if (!message.trim() || !session?.user) return;
 
     try {
       const privKey = await getPrivateKey();
-      if (!privKey) {
-        Alert.alert('Error', 'Private key not found. Re-login required.');
-        return;
-      }
+      if (!privKey) return;
 
-      // 1. Encrypt message for recipient
-      const encrypted = await encryptMessage(message, publicKey as string, privKey);
+      const sharedSecret = deriveSharedSecret(privKey, publicKey as string);
+      const { messageKey } = calculateRatchetKey(sharedSecret, messages.length);
 
-      // 2. Send via socket
-      socket.emit('private_message', {
-        to: id,
-        from: currentUser.id,
-        encryptedMessage: encrypted,
-      });
+      // Perform Ratchet Encryption
+      const { encrypted, nonce } = await encryptWithRatchet(message, messageKey);
 
-      // 3. Add to local state (unencrypted for self)
+      const { data, error } = await supabase
+        .from('messages')
+        .insert({
+          sender_id: session.user.id,
+          receiver_id: id,
+          encrypted_content: encrypted,
+          nonce: nonce, 
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+
       setMessages(prev => [...prev, {
-        id: Date.now().toString(),
+        id: data.id,
         text: message,
         sender: 'me',
-        timestamp: new Date()
+        timestamp: data.created_at
       }]);
 
       setMessage('');
     } catch (error) {
       console.error('Failed to send message:', error);
+      Alert.alert('Error', 'Message could not be sent');
     }
   };
+
 
   const renderMessage = ({ item }: { item: any }) => (
     <View style={[
@@ -213,7 +273,7 @@ const styles = StyleSheet.create({
     borderColor: Theme.colors.border,
   },
   messageText: {
-    color: '#000', // Best for bright cyan bg
+    color: '#000',
     fontSize: 15,
     lineHeight: 20,
   },
@@ -265,3 +325,4 @@ const styles = StyleSheet.create({
     opacity: 0.5,
   },
 });
+
