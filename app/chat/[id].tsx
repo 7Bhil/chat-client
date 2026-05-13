@@ -6,7 +6,8 @@ import { decryptMessage, deriveSharedSecret, calculateRatchetKey, encryptWithRat
 import { getPrivateKey } from '../../utils/api';
 import { useAuth } from '../../utils/AuthContext';
 import { supabase } from '../../utils/supabase';
-import { Shield, Send, ArrowLeft, Lock, Image as ImageIcon, Clock, Trash2, LayoutGrid, X } from 'lucide-react-native';
+import { Shield, Send, ArrowLeft, Lock, Image as ImageIcon, Clock, Trash2, LayoutGrid, X, Phone, Video } from 'lucide-react-native';
+import { WebView } from 'react-native-webview';
 import * as ImagePicker from 'expo-image-picker';
 import * as ScreenCapture from 'expo-screen-capture';
 
@@ -27,6 +28,8 @@ export default function ChatDetailScreen() {
   const [expiry, setExpiry] = useState<number | null>(null);
   const [showExpiryModal, setShowExpiryModal] = useState(false);
   const [showGallery, setShowGallery] = useState(false);
+  const [showCall, setShowCall] = useState(false);
+  const [callType, setCallType] = useState<'audio' | 'video'>('video');
   const { session } = useAuth();
   const router = useRouter();
   const flatListRef = useRef<FlatList>(null);
@@ -177,12 +180,21 @@ export default function ChatDetailScreen() {
           <Text style={styles.headerUsername}>{username}</Text>
           <View style={styles.encryptionBadge}><Lock size={12} color={Theme.colors.primary} /><Text style={styles.encryptionText}>End-to-End Encrypted</Text></View>
         </View>
-        <TouchableOpacity onPress={() => setShowExpiryModal(true)} style={[styles.expiryBtn, expiry && styles.expiryBtnActive]}>
+        <TouchableOpacity 
+          onPress={() => setShowExpiryModal(true)} 
+          style={[styles.expiryBtn, expiry ? styles.expiryBtnActive : null]}
+        >
           <Clock size={20} color={expiry ? Theme.colors.primary : Theme.colors.textSecondary} />
           {expiry && <Text style={styles.expiryLabel}>{EXPIRY_OPTIONS.find(o => o.seconds === expiry)?.label}</Text>}
         </TouchableOpacity>
         <TouchableOpacity onPress={() => setShowGallery(true)} style={styles.galleryBtn}>
           <LayoutGrid size={20} color={Theme.colors.text} />
+        </TouchableOpacity>
+        <TouchableOpacity onPress={() => { setCallType('audio'); setShowCall(true); }} style={styles.galleryBtn}>
+          <Phone size={20} color={Theme.colors.text} />
+        </TouchableOpacity>
+        <TouchableOpacity onPress={() => { setCallType('video'); setShowCall(true); }} style={styles.galleryBtn}>
+          <Video size={20} color={Theme.colors.text} />
         </TouchableOpacity>
       </View>
 
@@ -237,6 +249,20 @@ export default function ChatDetailScreen() {
           />
         </View>
       </Modal>
+
+      <Modal visible={showCall} animationType="slide">
+        <View style={{flex: 1, backgroundColor: '#000'}}>
+          <View style={[styles.galleryHeader, {backgroundColor: '#000'}]}>
+             <TouchableOpacity onPress={() => setShowCall(false)}><X size={24} color="#fff" /></TouchableOpacity>
+             <Text style={{color: '#fff', fontSize: 18, fontWeight: 'bold'}}>Secure Call: {username}</Text>
+             <View style={{width: 24}} />
+          </View>
+          <WebView 
+            source={{ uri: `https://meet.jit.si/SecureChat_${(session?.user?.id || '') < (id as string) ? (session?.user?.id || '') + '_' + id : id + '_' + (session?.user?.id || '')}#config.startWithAudioOnly=${callType === 'audio'}` }}
+            style={{ flex: 1 }}
+          />
+        </View>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -281,5 +307,6 @@ const styles = StyleSheet.create({
   galleryList: { padding: 2 },
   galleryImage: { width: '33%', aspectRatio: 1, margin: 1, borderRadius: 4 },
   emptyGallery: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 100 },
+  emptyText: { color: Theme.colors.textSecondary, marginTop: Theme.spacing.md, fontSize: 16 },
 });
 
