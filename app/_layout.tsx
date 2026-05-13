@@ -7,10 +7,10 @@ import 'text-encoding-polyfill';
 import 'react-native-reanimated';
 
 import { AuthProvider, useAuth } from '../utils/AuthContext';
-import { SocketProvider } from '../utils/SocketContext';
+import { registerForPushNotificationsAsync } from '../utils/notifications';
 
 function RootLayoutNav() {
-  const { isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, isLoading, session } = useAuth();
   const segments = useSegments();
   const router = useRouter();
 
@@ -24,19 +24,21 @@ function RootLayoutNav() {
     } else if (isAuthenticated && !inAuthGroup) {
       router.replace('/(tabs)');
     }
-  }, [isAuthenticated, segments, isLoading]);
+
+    if (isAuthenticated && session?.user) {
+      registerForPushNotificationsAsync(session.user.id);
+    }
+  }, [isAuthenticated, segments, isLoading, session]);
 
   if (isLoading) return null;
 
   return (
     <ThemeProvider value={DarkTheme}>
-      <SocketProvider>
-        <Stack screenOptions={{ headerShown: false }}>
-          <Stack.Screen name="login" />
-          <Stack.Screen name="signup" />
-          <Stack.Screen name="(tabs)" />
-        </Stack>
-      </SocketProvider>
+      <Stack screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="login" />
+        <Stack.Screen name="signup" />
+        <Stack.Screen name="(tabs)" />
+      </Stack>
       <StatusBar style="light" />
     </ThemeProvider>
   );
@@ -49,3 +51,4 @@ export default function RootLayout() {
     </AuthProvider>
   );
 }
+
