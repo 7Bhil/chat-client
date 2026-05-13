@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, TextInput, FlatList, KeyboardAvoidingView, Platform, TouchableOpacity, Alert, Image, Modal, Pressable } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Theme } from '../../constants/theme';
-import { deriveSharedSecret, encryptFile, decryptFile, encryptStandard, decryptStandard } from '../../utils/encryption';
+import { deriveSharedSecret, encryptFile, decryptFile, encryptText, decryptText } from '../../utils/encryption';
 import { getPrivateKey } from '../../utils/api';
 import { useAuth } from '../../utils/AuthContext';
 import { supabase } from '../../utils/supabase';
@@ -99,7 +99,7 @@ export default function ChatDetailScreen() {
               // File encryption still uses sharedSecret (secretbox)
               content = await decryptFile(msg.encrypted_content, msg.nonce, sharedSecret);
             } else {
-              content = await decryptStandard(msg.encrypted_content, msg.nonce, publicKey as string, privKey);
+              content = await decryptText(msg.encrypted_content, msg.nonce, sharedSecret);
             }
 
             return {
@@ -142,7 +142,7 @@ export default function ChatDetailScreen() {
           const sharedSecret = deriveSharedSecret(privKey, publicKey as string);
           let decrypted = payload.new.type === 'image' 
             ? await decryptFile(payload.new.encrypted_content, payload.new.nonce, sharedSecret)
-            : await decryptStandard(payload.new.encrypted_content, payload.new.nonce, publicKey as string, privKey);
+            : await decryptText(payload.new.encrypted_content, payload.new.nonce, sharedSecret);
 
           setMessages(prev => [...prev, {
             id: payload.new.id, text: decrypted || '[Decryption Error]', type: payload.new.type, sender: 'other', timestamp: payload.new.created_at, expiresAt: payload.new.expires_at
@@ -178,7 +178,7 @@ export default function ChatDetailScreen() {
 
       const { encrypted, nonce } = type === 'image' 
         ? await encryptFile(content, sharedSecret)
-        : await encryptStandard(content, publicKey as string, privKey!);
+        : await encryptText(content, sharedSecret);
 
       const expiresAt = expiry ? new Date(Date.now() + expiry * 1000).toISOString() : null;
 

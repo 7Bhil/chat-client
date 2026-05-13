@@ -107,37 +107,32 @@ export const decryptWithRatchet = async (
 };
 
 /**
- * Standard Stateless Box Encryption
- * Uses nacl.box which handles the DH key exchange and secretbox internally.
- * This is 100% robust and cannot be desynchronized.
+ * Text Encryption using derived Symmetric Key (ECDH)
+ * This is incredibly robust as it uses the exact same sharedSecret for everything.
  */
-export const encryptStandard = async (
+export const encryptText = async (
   message: string,
-  recipientPublicKey: string,
-  senderPrivateKey: string
+  sharedSecret: Uint8Array
 ): Promise<{ encrypted: string; nonce: string }> => {
-  const nonce = nacl.randomBytes(nacl.box.nonceLength);
-  const encrypted = nacl.box(
+  const nonce = nacl.randomBytes(nacl.secretbox.nonceLength);
+  const encrypted = nacl.secretbox(
     stringToUint8(message), 
     nonce, 
-    decodeBase64(recipientPublicKey), 
-    decodeBase64(senderPrivateKey)
+    sharedSecret
   );
   return { encrypted: encodeBase64(encrypted), nonce: encodeBase64(nonce) };
 };
 
-export const decryptStandard = async (
+export const decryptText = async (
   encryptedBase64: string,
   nonceBase64: string,
-  senderPublicKey: string,
-  recipientPrivateKey: string
+  sharedSecret: Uint8Array
 ): Promise<string | null> => {
   try {
-    const decrypted = nacl.box.open(
+    const decrypted = nacl.secretbox.open(
       decodeBase64(encryptedBase64),
       decodeBase64(nonceBase64),
-      decodeBase64(senderPublicKey),
-      decodeBase64(recipientPrivateKey)
+      sharedSecret
     );
     return decrypted ? uint8ToString(decrypted) : null;
   } catch (error) {
