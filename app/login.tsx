@@ -3,14 +3,15 @@ import { View, Text, StyleSheet, TextInput, KeyboardAvoidingView, Platform, Scro
 import { useRouter } from 'expo-router';
 import { Theme } from '../constants/theme';
 import { SecureButton } from '../components/SecureButton';
-import { api, storeUser } from '../utils/api';
 import { useAuth } from '../utils/AuthContext';
+import { supabase } from '../utils/supabase';
 import * as SecureStore from 'expo-secure-store';
 import { Lock, User, Fingerprint } from 'lucide-react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
 
+
 export default function LoginScreen() {
-  const { login: authLogin } = useAuth();
+  const {  } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -25,14 +26,11 @@ export default function LoginScreen() {
     const hasBiometrics = await LocalAuthentication.hasHardwareAsync();
     const isEnrolled = await LocalAuthentication.isEnrolledAsync();
     const prefEnabled = await SecureStore.getItemAsync('useBiometrics') === 'true';
-    const savedToken = await SecureStore.getItemAsync('token');
     
-    setCanUseBiometrics(hasBiometrics && isEnrolled && prefEnabled && !!savedToken);
-    
-    if (hasBiometrics && isEnrolled && prefEnabled && !!savedToken) {
-        handleBiometricAuth();
-    }
+    // On n'affiche le bouton biométrique que si tout est prêt
+    setCanUseBiometrics(hasBiometrics && isEnrolled && prefEnabled);
   };
+
 
   const handleBiometricAuth = async () => {
     const result = await LocalAuthentication.authenticateAsync({
@@ -53,13 +51,14 @@ export default function LoginScreen() {
 
     setLoading(true);
     try {
-      const response = await api.post('/login', {
-        username,
-        password
-      });
+      const virtualEmail = `${username.trim().toLowerCase()}@chat.app`;
       
-      const { token, user } = response.data;
-      await authLogin(token, user);
+      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+        email: virtualEmail,
+        password: password,
+      });
+
+      if (authError) throw authError;
       
       // Check if private key exists
       const privKey = await SecureStore.getItemAsync('privateKey');
@@ -70,15 +69,12 @@ export default function LoginScreen() {
       router.replace('/(tabs)');
     } catch (error: any) {
       console.error(error);
-      const errorMessage = error.response?.status === 401 
-        ? 'Invalid username or password' 
-        : (error.response?.data?.error || 'Login failed');
-      Alert.alert('Error', errorMessage);
+      Alert.alert('Error', error.message || 'Login failed');
     } finally {
-
       setLoading(false);
     }
   };
+
 
   return (
     <KeyboardAvoidingView 

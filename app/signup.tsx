@@ -4,14 +4,15 @@ import { useRouter } from 'expo-router';
 import { Theme } from '../constants/theme';
 import { SecureButton } from '../components/SecureButton';
 import { generateKeyPair } from '../utils/encryption';
-import { api, storePrivateKey, storeUser } from '../utils/api';
+import { storePrivateKey } from '../utils/api';
 import { useAuth } from '../utils/AuthContext';
+import { supabase } from '../utils/supabase';
 import * as SecureStore from 'expo-secure-store';
 import { Lock, User, Key, Fingerprint } from 'lucide-react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
 
 export default function SignupScreen() {
-  const { login: authLogin } = useAuth();
+  const {  } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [useBiometrics, setUseBiometrics] = useState(false);
@@ -57,24 +58,40 @@ export default function SignupScreen() {
         await SecureStore.setItemAsync('useBiometrics', 'true');
       }
 
-      // 4. Register user with Public Key
-      const response = await api.post('/register', {
-        username,
-        password,
-        publicKey: keys.publicKey
+      // 4. Supabase Signup
+      // Create a virtual email for Supabase Auth
+      const virtualEmail = `${username.trim().toLowerCase()}@chat.app`;
+      
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email: virtualEmail,
+        password: password,
       });
-      
-      const { token, user } = response.data;
-      await authLogin(token, user);
-      
+
+      if (authError) throw authError;
+
+      if (authData.user) {
+        // 5. Create Public Profile
+        const { error: profileError } = await supabase
+          .from('profiles')
+          .insert({
+            id: authData.user.id,
+            username: username.trim(),
+            public_key: keys.publicKey,
+          });
+
+        if (profileError) throw profileError;
+      }
+
+      Alert.alert('Success', 'Account created successfully!');
       router.replace('/(tabs)');
     } catch (error: any) {
       console.error(error);
-      Alert.alert('Error', error.response?.data?.error || 'Registration failed');
+      Alert.alert('Error', error.message || 'Registration failed');
     } finally {
       setLoading(false);
     }
   };
+
 
   return (
     <KeyboardAvoidingView 
