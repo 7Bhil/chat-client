@@ -57,10 +57,8 @@ export default function SignupScreen() {
       // 1. Generate E2EE keys LOCALLY
       const keys = await generateKeyPair();
       
-      // 2. Store Private Key SECURELY on device
-      await storePrivateKey(keys.privateKey);
-      
-      // 3. Store security preferences
+      // 2. Store security preferences
+
       if (usePasscode) {
         await SecureStore.setItemAsync('app_passcode', passcode);
         await SecureStore.setItemAsync('usePasscode', 'true');
@@ -92,6 +90,9 @@ export default function SignupScreen() {
           });
 
         if (profileError) throw profileError;
+
+        // 6. Store Private Key SECURELY on device mapped to the user ID
+        await storePrivateKey(authData.user.id, keys.privateKey);
       }
 
       Alert.alert('Success', 'Account created successfully!');

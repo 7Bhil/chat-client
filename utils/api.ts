@@ -19,16 +19,22 @@ api.interceptors.request.use(async (config) => {
 // Our private keys are small (TweetNaCl keys are 32 bytes binary -> ~44 chars base64),
 // so the warning might come from storing large JSON objects (like the whole user profile).
 
-export const storePrivateKey = async (privateKey: string) => {
+export const storePrivateKey = async (userId: string, privateKey: string) => {
   try {
+    // Stockage global (legacy) et spécifique par utilisateur
     await SecureStore.setItemAsync('privateKey', privateKey);
+    await SecureStore.setItemAsync(`privateKey_${userId}`, privateKey);
     console.log('Private key stored successfully');
   } catch (err) {
     console.error('Failed to store private key:', err);
   }
 };
 
-export const getPrivateKey = async () => {
+export const getPrivateKey = async (userId?: string) => {
+  if (userId) {
+     const userKey = await SecureStore.getItemAsync(`privateKey_${userId}`);
+     if (userKey) return userKey;
+  }
   return await SecureStore.getItemAsync('privateKey');
 };
 

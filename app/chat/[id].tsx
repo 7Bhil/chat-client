@@ -74,7 +74,7 @@ export default function ChatDetailScreen() {
 
         if (error) throw error;
 
-        const privKey = await getPrivateKey();
+        const privKey = await getPrivateKey(session.user.id);
         if (!privKey) {
             console.warn("Private key missing, cannot decrypt history.");
             return;
@@ -137,7 +137,7 @@ export default function ChatDetailScreen() {
       .channel(`chat:${id}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `receiver_id=eq.${session.user.id}` }, async (payload) => {
         if (payload.new.sender_id !== id) return;
-        const privKey = await getPrivateKey();
+        const privKey = await getPrivateKey(session.user.id);
         if (privKey) {
           const sharedSecret = deriveSharedSecret(privKey, publicKey as string);
           let decrypted = payload.new.type === 'image' 
@@ -173,7 +173,7 @@ export default function ChatDetailScreen() {
   const handleSend = async (type = 'text', content = message) => {
     if (!content.trim() || !session?.user) return;
     try {
-      const privKey = await getPrivateKey();
+      const privKey = await getPrivateKey(session.user.id);
       const sharedSecret = deriveSharedSecret(privKey!, publicKey as string);
 
       const { encrypted, nonce } = type === 'image' 
