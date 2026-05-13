@@ -152,5 +152,39 @@ export const decryptMessage = async (
     return null;
   }
 };
+/**
+ * Binary Encryption for Files/Images
+ */
+export const encryptFile = async (
+  base64Data: string,
+  messageKey: Uint8Array
+): Promise<{ encrypted: string; nonce: string }> => {
+  const binary = decodeBase64(base64Data);
+  const nonce = nacl.randomBytes(nacl.secretbox.nonceLength);
+  
+  const encrypted = nacl.secretbox(binary, nonce, messageKey);
+  
+  return {
+    encrypted: encodeBase64(encrypted),
+    nonce: encodeBase64(nonce)
+  };
+};
 
-
+/**
+ * Binary Decryption for Files/Images
+ */
+export const decryptFile = async (
+  encryptedBase64: string,
+  nonceBase64: string,
+  messageKey: Uint8Array
+): Promise<string | null> => {
+  try {
+    const encrypted = decodeBase64(encryptedBase64);
+    const nonce = decodeBase64(nonceBase64);
+    
+    const decrypted = nacl.secretbox.open(encrypted, nonce, messageKey);
+    return decrypted ? encodeBase64(decrypted) : null;
+  } catch (error) {
+    return null;
+  }
+};

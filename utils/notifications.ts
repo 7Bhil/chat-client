@@ -26,15 +26,20 @@ export async function registerForPushNotificationsAsync(userId: string) {
       console.log('Failed to get push token for push notification!');
       return;
     }
-    token = (await Notifications.getExpoPushTokenAsync()).data;
-    
-    // Save token to Supabase profile
-    if (token) {
-      await supabase
-        .from('profiles')
-        .update({ push_token: token })
-        .eq('id', userId);
+    try {
+      token = (await Notifications.getExpoPushTokenAsync()).data;
+      
+      // Save token to Supabase profile
+      if (token) {
+        await supabase
+          .from('profiles')
+          .update({ push_token: token })
+          .eq('id', userId);
+      }
+    } catch (e) {
+      console.log('Push notification support skipped (Expo Go or missing config)');
     }
+
   } else {
     console.log('Must use physical device for Push Notifications');
   }
