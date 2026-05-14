@@ -124,18 +124,20 @@ export const decryptWithRatchet = async (
 };
 
 /**
- * Text Encryption using derived Symmetric Key (ECDH)
- * This is incredibly robust as it uses the exact same sharedSecret for everything.
+ * Text Encryption using Standard NaCl Box (Asymmetric)
+ * This is the most robust method for E2EE as it handles keys internally.
  */
 export const encryptText = async (
   message: string,
-  sharedSecret: Uint8Array
+  theirPublicKey: string,
+  myPrivateKey: string
 ): Promise<{ encrypted: string; nonce: string }> => {
-  const nonce = nacl.randomBytes(nacl.secretbox.nonceLength);
-  const encrypted = nacl.secretbox(
-    stringToUint8(message), 
-    nonce, 
-    sharedSecret
+  const nonce = nacl.randomBytes(nacl.box.nonceLength);
+  const encrypted = nacl.box(
+    stringToUint8(message),
+    nonce,
+    decodeBase64(theirPublicKey),
+    decodeBase64(myPrivateKey)
   );
   return { encrypted: encodeBase64(encrypted), nonce: encodeBase64(nonce) };
 };
@@ -143,16 +145,19 @@ export const encryptText = async (
 export const decryptText = async (
   encryptedBase64: string,
   nonceBase64: string,
-  sharedSecret: Uint8Array
+  theirPublicKey: string,
+  myPrivateKey: string
 ): Promise<string | null> => {
   try {
-    const decrypted = nacl.secretbox.open(
+    const decrypted = nacl.box.open(
       decodeBase64(encryptedBase64),
       decodeBase64(nonceBase64),
-      sharedSecret
+      decodeBase64(theirPublicKey),
+      decodeBase64(myPrivateKey)
     );
     return decrypted ? uint8ToString(decrypted) : null;
   } catch (error) {
+    console.error("Critical Decryption Error:", error);
     return null;
   }
 };

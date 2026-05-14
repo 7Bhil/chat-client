@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { supabase } from './supabase';
 import { Session } from '@supabase/supabase-js';
+import * as SecureStore from 'expo-secure-store';
 
 interface AuthContextType {
   isAuthenticated: boolean;
@@ -40,6 +41,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = async () => {
     await supabase.auth.signOut();
+    // Clean up local storage to prevent session leakage
+    await SecureStore.deleteItemAsync('token');
+    await SecureStore.deleteItemAsync('user');
   };
 
   return (

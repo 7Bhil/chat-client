@@ -120,9 +120,10 @@ export default function ChatDetailScreen() {
             if (msg.expires_at && new Date(msg.expires_at) < new Date()) return null;
 
             if (baseType === 'image' || baseType === 'image-once') {
+              const sharedSecret = deriveSharedSecret(privKey, currentPub);
               content = await decryptFile(msg.encrypted_content, msg.nonce, sharedSecret);
             } else {
-              content = await decryptText(msg.encrypted_content, msg.nonce, sharedSecret);
+              content = await decryptText(msg.encrypted_content, msg.nonce, currentPub, privKey);
             }
 
             return {
@@ -172,8 +173,8 @@ export default function ChatDetailScreen() {
           }
 
           let decrypted = (baseType === 'image' || baseType === 'image-once') 
-            ? await decryptFile(payload.new.encrypted_content, payload.new.nonce, sharedSecret)
-            : await decryptText(payload.new.encrypted_content, payload.new.nonce, sharedSecret);
+            ? await decryptFile(payload.new.encrypted_content, payload.new.nonce, deriveSharedSecret(privKey, activePublicKey))
+            : await decryptText(payload.new.encrypted_content, payload.new.nonce, activePublicKey, privKey);
 
           let computedExpiresAt = payload.new.expires_at;
 
@@ -224,8 +225,8 @@ export default function ChatDetailScreen() {
       const sharedSecret = deriveSharedSecret(privKey!, activePublicKey);
 
       const { encrypted, nonce } = (type === 'image' || type === 'image-once')
-        ? await encryptFile(content, sharedSecret)
-        : await encryptText(content, sharedSecret);
+        ? await encryptFile(content, deriveSharedSecret(privKey!, activePublicKey))
+        : await encryptText(content, activePublicKey, privKey!);
 
       const typeStr = expiry ? `${type}:${expiry}` : type;
 
