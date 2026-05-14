@@ -5,8 +5,18 @@ import CryptoJS from 'crypto-js';
 // tweetnacl uses Uint8Array, so we need conversion helpers
 const encodeBase64 = (arr: Uint8Array) => base64.fromByteArray(arr);
 const decodeBase64 = (str: string) => base64.toByteArray(str);
-const stringToUint8 = (str: string) => new TextEncoder().encode(str);
-const uint8ToString = (arr: Uint8Array) => new TextDecoder().decode(arr);
+
+const stringToUint8 = (str: string) => {
+  const words = CryptoJS.enc.Utf8.parse(str);
+  const base64Str = CryptoJS.enc.Base64.stringify(words);
+  return decodeBase64(base64Str);
+};
+
+const uint8ToString = (arr: Uint8Array) => {
+  const base64Str = encodeBase64(arr);
+  const words = CryptoJS.enc.Base64.parse(base64Str);
+  return CryptoJS.enc.Utf8.stringify(words);
+};
 
 export interface KeyPair {
   publicKey: string;
@@ -28,11 +38,11 @@ export const generateKeyPair = async (): Promise<KeyPair> => {
  * HKDF implementation using CryptoJS for key derivation
  */
 const HKDF = (inputKey: Uint8Array, salt: string, info: string): Uint8Array => {
-  const ikm = CryptoJS.enc.Hex.parse(encodeBase64(inputKey));
+  // Correction : use Base64 parsing to correctly ingest the binary keys
+  const ikm = CryptoJS.enc.Base64.parse(encodeBase64(inputKey));
   const saltWa = CryptoJS.enc.Utf8.parse(salt);
   const infoWa = CryptoJS.enc.Utf8.parse(info);
   
-  // Simple HMAC-based derivation
   const prk = CryptoJS.HmacSHA256(ikm, saltWa);
   const okm = CryptoJS.HmacSHA256(infoWa, prk);
   
@@ -48,7 +58,14 @@ export const deriveSharedSecret = (
 ): Uint8Array => {
   const priv = decodeBase64(myPrivateKey);
   const pub = decodeBase64(theirPublicKey);
-  return nacl.box.before(pub, priv);
+  
+  // Calculate raw DH shared secret
+  const shared = nacl.box.before(pub, priv);
+  
+  // Hash it with SHA-256 to get a final 32-byte symmetric key
+  // This is a security best practice for ECDH
+  const hash = CryptoJS.SHA256(CryptoJS.enc.Base64.parse(encodeBase64(shared)));
+  return decodeBase64(CryptoJS.enc.Base64.stringify(hash));
 };
 
 /** 
