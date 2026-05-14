@@ -5,26 +5,8 @@ import CryptoJS from 'crypto-js';
 // tweetnacl uses Uint8Array, so we need conversion helpers
 const encodeBase64 = (arr: Uint8Array) => base64.fromByteArray(arr);
 const decodeBase64 = (str: string) => base64.toByteArray(str);
-const stringToUint8 = (str: string) => {
-  const utf8 = unescape(encodeURIComponent(str));
-  const arr = new Uint8Array(utf8.length);
-  for (let i = 0; i < utf8.length; i++) {
-    arr[i] = utf8.charCodeAt(i);
-  }
-  return arr;
-};
-
-const uint8ToString = (arr: Uint8Array) => {
-  let utf8 = '';
-  for (let i = 0; i < arr.length; i++) {
-    utf8 += String.fromCharCode(arr[i]);
-  }
-  try {
-    return decodeURIComponent(escape(utf8));
-  } catch (e) {
-    return utf8; // Fallback if decoding fails
-  }
-};
+const stringToUint8 = (str: string) => new TextEncoder().encode(str);
+const uint8ToString = (arr: Uint8Array) => new TextDecoder().decode(arr);
 
 export interface KeyPair {
   publicKey: string;

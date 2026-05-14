@@ -22,7 +22,8 @@ const EXPIRY_OPTIONS = [
 ];
 
 export default function ChatDetailScreen() {
-  const { id, username, publicKey } = useLocalSearchParams();
+  const { id, username, publicKey: initialPublicKey } = useLocalSearchParams();
+  const [activePublicKey, setActivePublicKey] = useState<string | null>(initialPublicKey as string || null);
   const [message, setMessage] = useState('');
   const [messages, setMessages] = useState<any[]>([]);
   const [expiry, setExpiry] = useState<number | null>(null);
@@ -66,6 +67,11 @@ export default function ChatDetailScreen() {
 
     const fetchHistory = async () => {
       try {
+        // 1. Fetch current public key of the other user to ensure it's not stale
+        const { data: profile } = await supabase.from('profiles').select('public_key').eq('id', id).single();
+        const currentPub = profile?.public_key || initialPublicKey as string;
+        if (profile?.public_key) setActivePublicKey(profile.public_key);
+
         const { data, error } = await supabase
           .from('messages')
           .select('*')
@@ -80,13 +86,13 @@ export default function ChatDetailScreen() {
             return;
         }
 
-        if (!publicKey) {
-            console.warn("Public key missing for this specific user. Maybe it's an old account?");
+        if (!currentPub) {
+            console.warn("Public key missing for this specific user.");
             setMessages(data || []);
             return;
         }
 
-        const sharedSecret = deriveSharedSecret(privKey, publicKey as string);
+        const sharedSecret = deriveSharedSecret(privKey, currentPub);
 
         const unreadUpdates: {id: string, expires_at: string}[] = [];
 
@@ -154,8 +160,8 @@ export default function ChatDetailScreen() {
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `receiver_id=eq.${session.user.id}` }, async (payload) => {
         if (payload.new.sender_id !== id) return;
         const privKey = await getPrivateKey(session.user.id);
-        if (privKey) {
-          const sharedSecret = deriveSharedSecret(privKey, publicKey as string);
+        if (privKey && activePublicKey) {
+          const sharedSecret = deriveSharedSecret(privKey, activePublicKey);
           let baseType = payload.new.type;
           let duration = null;
           if (payload.new.type && payload.new.type.includes(':')) {
@@ -207,7 +213,8 @@ export default function ChatDetailScreen() {
     if (!content.trim() || !session?.user) return;
     try {
       const privKey = await getPrivateKey(session.user.id);
-      const sharedSecret = deriveSharedSecret(privKey!, publicKey as string);
+      if (!activePublicKey) throw new Error("No public key found for recipient");
+      const sharedSecret = deriveSharedSecret(privKey!, activePublicKey);
 
       const { encrypted, nonce } = (type === 'image' || type === 'image-once')
         ? await encryptFile(content, sharedSecret)
