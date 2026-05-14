@@ -10,6 +10,7 @@ import { Shield, Send, ArrowLeft, Lock, Image as ImageIcon, Clock, Trash2, Layou
 import { WebView } from 'react-native-webview';
 import * as ImagePicker from 'expo-image-picker';
 import * as ScreenCapture from 'expo-screen-capture';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const EXPIRY_OPTIONS = [
   { label: 'Off', seconds: null },
@@ -200,14 +201,20 @@ export default function ChatDetailScreen() {
     return () => { supabase.removeChannel(channel); };
   }, [session, id, messages.length]);
 
-  // Handle local disappearance
+  // Handle local disappearance and save last read time on exit
   useEffect(() => {
     const timer = setInterval(() => {
       const now = new Date();
       setMessages(prev => prev.filter(m => !m.expiresAt || new Date(m.expiresAt) > now));
     }, 1000);
-    return () => clearInterval(timer);
-  }, []);
+    return () => {
+      clearInterval(timer);
+      if (session?.user?.id && id) {
+        AsyncStorage.setItem(`last_read_${session.user.id}_${id}`, new Date().getTime().toString()).catch(() => {});
+      }
+    };
+  }, [session?.user?.id, id]);
+
 
   const handleSend = async (type = 'text', content = message) => {
     if (!content.trim() || !session?.user) return;

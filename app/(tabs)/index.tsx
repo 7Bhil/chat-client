@@ -7,6 +7,7 @@ import { useAuth } from '../../utils/AuthContext';
 import { supabase } from '../../utils/supabase';
 import { LoadingScreen } from '../../components/LoadingScreen';
 import * as LocalAuthentication from 'expo-local-authentication';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export default function ChatListScreen() {
   const [users, setUsers] = useState<any[]>([]);
@@ -34,22 +35,24 @@ export default function ChatListScreen() {
         .select('sender_id, receiver_id, created_at, is_read')
         .or(`sender_id.eq.${session.user.id},receiver_id.eq.${session.user.id}`);
 
-      const processedProfiles = (profiles || []).map(profile => {
+      const processedProfiles = await Promise.all((profiles || []).map(async profile => {
         const chatMessages = messages?.filter(m => m.sender_id === profile.id || m.receiver_id === profile.id) || [];
-        // Trouve le timestamp du dernier message (soit reçu, soit envoyé)
         const latestMsg = chatMessages.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
         
-        // Compte les messages non lus envoyés par CE profil
-        const unreadCount = chatMessages.filter(m => m.sender_id === profile.id && !m.is_read).length;
+        const lastReadStr = await AsyncStorage.getItem(`last_read_${session.user.id}_${profile.id}`);
+        const lastReadTime = lastReadStr ? parseInt(lastReadStr, 10) : 0;
+        
+        // Count messages sent by them strictly AFTER our last local read time
+        const unreadCount = chatMessages.filter(m => m.sender_id === profile.id && new Date(m.created_at).getTime() > lastReadTime).length;
 
         return {
           ...profile,
           latestInteraction: latestMsg ? new Date(latestMsg.created_at).getTime() : 0,
           unreadCount
         };
-      }).sort((a, b) => b.latestInteraction - a.latestInteraction);
+      }));
 
-      setUsers(processedProfiles);
+      setUsers(processedProfiles.sort((a, b) => b.latestInteraction - a.latestInteraction));
 
       const { data: myProfile } = await supabase.from('profiles').select('username').eq('id', session.user.id).single();
       if (myProfile) setUsername(myProfile.username);
@@ -113,12 +116,15 @@ export default function ChatListScreen() {
     // 5. Écoute globale des nouveaux messages pour incrémenter les "non lus"
     // et faire remonter immédiatement le profil en haut de la liste
     const syncUnreadCount = async (senderId: string) => {
+      const lastReadStr = await AsyncStorage.getItem(`last_read_${session.user.id}_${senderId}`);
+      const lastReadTime = lastReadStr ? parseInt(lastReadStr, 10) : 0;
+      
       const { count } = await supabase
         .from('messages')
         .select('*', { count: 'exact', head: true })
         .eq('sender_id', senderId)
         .eq('receiver_id', session.user.id)
-        .eq('is_read', false);
+        .gt('created_at', new Date(lastReadTime).toISOString());
       
       setUsers(prev => prev.map(u => u.id === senderId ? { ...u, unreadCount: count || 0, latestInteraction: new Date().getTime() } : u).sort((a, b) => b.latestInteraction - a.latestInteraction));
     };
@@ -126,11 +132,6 @@ export default function ChatListScreen() {
     const globalMessagesChannel = supabase.channel('global-messages')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `receiver_id=eq.${session.user.id}` }, (payload) => {
           syncUnreadCount(payload.new.sender_id);
-      })
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages', filter: `receiver_id=eq.${session.user.id}` }, (payload) => {
-         if (payload.new.is_read) {
-           syncUnreadCount(payload.new.sender_id);
-         }
       })
       .subscribe();
 
@@ -145,7 +146,8 @@ export default function ChatListScreen() {
   };
 
     const openChat = async (item: any) => {
-      // Efface immédiatement la pastille des non-lus en local
+      // Efface immédiatement la pastille des non-lus en local et sauvegarde l'heure
+      await AsyncStorage.setItem(`last_read_${session?.user?.id}_${item.id}`, new Date().getTime().toString());
       setUsers(prev => prev.map(u => u.id === item.id ? { ...u, unreadCount: 0 } : u));
 
       try {
