@@ -22,7 +22,10 @@ export const LoadingScreen = ({ onFinish, overlay = false, speed = 150 }: { onFi
         currentIndex++;
       } else {
         clearInterval(interval);
-        if (onFinish) setTimeout(onFinish, 800);
+        // Garantit que l'animation est vue en entier avant de libérer l'écran
+        setTimeout(() => {
+          if (onFinish) onFinish();
+        }, 500);
       }
     }, speed);
 
