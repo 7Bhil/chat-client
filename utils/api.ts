@@ -21,21 +21,17 @@ api.interceptors.request.use(async (config) => {
 
 export const storePrivateKey = async (userId: string, privateKey: string) => {
   try {
-    // Stockage global (legacy) et spécifique par utilisateur
-    await SecureStore.setItemAsync('privateKey', privateKey);
     await SecureStore.setItemAsync(`privateKey_${userId}`, privateKey);
-    console.log('Private key stored successfully');
+    console.log('Private key stored for user:', userId);
   } catch (err) {
     console.error('Failed to store private key:', err);
   }
 };
 
-export const getPrivateKey = async (userId?: string) => {
-  if (userId) {
-     const userKey = await SecureStore.getItemAsync(`privateKey_${userId}`);
-     if (userKey) return userKey;
-  }
-  return await SecureStore.getItemAsync('privateKey');
+export const getPrivateKey = async (userId: string): Promise<string | null> => {
+  // ONLY get the key for this specific user. Never fall back to another user's key.
+  const userKey = await SecureStore.getItemAsync(`privateKey_${userId}`);
+  return userKey || null;
 };
 
 export const storeUser = async (user: any) => {
