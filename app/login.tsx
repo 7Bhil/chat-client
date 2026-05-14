@@ -12,6 +12,7 @@ import { Lock, User, Fingerprint } from 'lucide-react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { Key, X, Fingerprint as FingerprintIcon } from 'lucide-react-native';
 import { Modal } from 'react-native';
+import { LoadingScreen } from '../components/LoadingScreen';
 
 
 export default function LoginScreen() {
@@ -120,6 +121,7 @@ export default function LoginScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       style={styles.container}
     >
+      {loading && <LoadingScreen overlay speed={80} />}
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.header}>
           <View style={styles.logoContainer}>

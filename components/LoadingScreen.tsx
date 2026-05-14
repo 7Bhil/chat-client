@@ -3,20 +3,18 @@ import { View, Text, StyleSheet, Animated } from 'react-native';
 import { Theme } from '../constants/theme';
 import { Lock } from 'lucide-react-native';
 
-export const LoadingScreen = ({ onFinish }: { onFinish: () => void }) => {
+export const LoadingScreen = ({ onFinish, overlay = false, speed = 150 }: { onFinish?: () => void, overlay?: boolean, speed?: number }) => {
   const fullText = "Bhildiamant";
   const [displayedText, setDisplayedText] = useState("");
   const fadeAnim = new Animated.Value(0);
 
   useEffect(() => {
-    // Fade in animation
     Animated.timing(fadeAnim, {
       toValue: 1,
-      duration: 1000,
+      duration: 500,
       useNativeDriver: true,
     }).start();
 
-    // Typing effect
     let currentIndex = 0;
     const interval = setInterval(() => {
       if (currentIndex < fullText.length) {
@@ -24,26 +22,28 @@ export const LoadingScreen = ({ onFinish }: { onFinish: () => void }) => {
         currentIndex++;
       } else {
         clearInterval(interval);
-        setTimeout(onFinish, 1500); // Wait a bit after typing is done
+        if (onFinish) setTimeout(onFinish, 800);
       }
-    }, 150);
+    }, speed);
 
     return () => clearInterval(interval);
   }, []);
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, overlay && styles.overlay]}>
       <Animated.View style={[styles.logoContainer, { opacity: fadeAnim }]}>
         <View style={styles.logoCircle}>
-          <Lock size={40} color={Theme.colors.primary} />
+          <Lock size={overlay ? 30 : 40} color={Theme.colors.primary} />
         </View>
       </Animated.View>
       
-      <Text style={styles.text}>{displayedText}</Text>
+      <Text style={[styles.text, overlay && { fontSize: 32 }]}>{displayedText}</Text>
       
-      <View style={styles.indicatorContainer}>
-        <View style={styles.indicator} />
-      </View>
+      {!overlay && (
+        <View style={styles.indicatorContainer}>
+          <View style={styles.indicator} />
+        </View>
+      )}
     </View>
   );
 };
@@ -55,13 +55,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    zIndex: 9999,
+  },
   logoContainer: {
-    marginBottom: 30,
+    marginBottom: 20,
   },
   logoCircle: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
+    width: 80,
+    height: 80,
+    borderRadius: 40,
     backgroundColor: 'rgba(0, 229, 255, 0.1)',
     alignItems: 'center',
     justifyContent: 'center',

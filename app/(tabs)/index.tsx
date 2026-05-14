@@ -5,6 +5,7 @@ import { Theme } from '../../constants/theme';
 import { Shield, MessageSquare, LogOut, ChevronRight, Circle, Lock } from 'lucide-react-native';
 import { useAuth } from '../../utils/AuthContext';
 import { supabase } from '../../utils/supabase';
+import { LoadingScreen } from '../../components/LoadingScreen';
 import * as LocalAuthentication from 'expo-local-authentication';
 
 export default function ChatListScreen() {
@@ -208,6 +209,7 @@ export default function ChatListScreen() {
 
   return (
     <View style={styles.container}>
+      {(loading && users.length === 0) && <LoadingScreen speed={100} />}
       <View style={styles.header}>
         <View style={styles.headerTop}>
           <View style={styles.brand}>

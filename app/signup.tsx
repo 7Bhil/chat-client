@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, TextInput, KeyboardAvoidingView, Platform, Scro
 import { useRouter } from 'expo-router';
 import { Theme } from '../constants/theme';
 import { SecureButton } from '../components/SecureButton';
+import { LoadingScreen } from '../components/LoadingScreen';
 import { generateKeyPair } from '../utils/encryption';
 import { storePrivateKey } from '../utils/api';
 import { useAuth } from '../utils/AuthContext';
@@ -111,6 +112,7 @@ export default function SignupScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       style={styles.container}
     >
+      {loading && <LoadingScreen overlay speed={80} />}
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.header}>
           <View style={styles.logoContainer}>
