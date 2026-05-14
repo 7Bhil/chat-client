@@ -5,6 +5,8 @@ import { Theme } from '../constants/theme';
 import { SecureButton } from '../components/SecureButton';
 import { useAuth } from '../utils/AuthContext';
 import { supabase } from '../utils/supabase';
+import { getPrivateKey, storePrivateKey } from '../utils/api';
+import { generateKeyPair } from '../utils/encryption';
 import * as SecureStore from 'expo-secure-store';
 import { Lock, User, Fingerprint } from 'lucide-react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
@@ -94,9 +96,13 @@ export default function LoginScreen() {
       if (authError) throw authError;
       
       // Check if private key exists
-      const privKey = await SecureStore.getItemAsync('privateKey');
+      const privKey = await getPrivateKey(authData.user.id);
       if (!privKey) {
-          Alert.alert('Warning', 'Private key not found on this device. You will not be able to decrypt old messages.');
+          console.warn("Generating new keypair for this device...");
+          const keys = await generateKeyPair();
+          await storePrivateKey(authData.user.id, keys.privateKey);
+          await supabase.from('profiles').update({ public_key: keys.publicKey }).eq('id', authData.user.id);
+          Alert.alert('Notice de Sécurité', 'Nouveau dispositif détecté. Une nouvelle clé de chiffrement a été générée. Vos anciens messages sont illisibles, mais vous pouvez échanger de nouveaux messages en toute sécurité.');
       }
       
       router.replace('/(tabs)');
