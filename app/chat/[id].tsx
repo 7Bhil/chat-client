@@ -235,6 +235,9 @@ export default function ChatDetailScreen() {
       if (error) throw error;
       setMessages(prev => [...prev, { id: data.id, text: content, type, sender: 'me', timestamp: data.created_at, isRead: false, expiresAt: null }]);
       setMessage('');
+      
+      // Force mark all previous messages from this user as read when replying
+      supabase.from('messages').update({ is_read: true }).eq('receiver_id', session.user.id).eq('sender_id', id).then();
     } catch (error) { Alert.alert('Error', 'Failed to send'); }
   };
 

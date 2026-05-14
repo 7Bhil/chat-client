@@ -63,7 +63,11 @@ export default function ChatListScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      fetchUsers();
+      // Small delay to ensure DB updates from chat screen are persisted
+      const timer = setTimeout(() => {
+        fetchUsers();
+      }, 150);
+      return () => clearTimeout(timer);
     }, [session?.user?.id])
   );
 
