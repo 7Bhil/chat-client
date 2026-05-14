@@ -8,14 +8,31 @@ import 'react-native-reanimated';
 
 import { AuthProvider, useAuth } from '../utils/AuthContext';
 import { registerForPushNotificationsAsync } from '../utils/notifications';
+import * as SplashScreen from 'expo-splash-screen';
+import { useFonts, GreatVibes_400Regular } from '@expo-google-fonts/great-vibes';
+import { LoadingScreen } from '../components/LoadingScreen';
+import { useState } from 'react';
+
+SplashScreen.preventAutoHideAsync();
 
 function RootLayoutNav() {
   const { isAuthenticated, isLoading, session } = useAuth();
+  const [isAnimationDone, setIsAnimationDone] = useState(false);
   const segments = useSegments();
   const router = useRouter();
 
+  const [fontsLoaded] = useFonts({
+    GreatVibes_400Regular,
+  });
+
   useEffect(() => {
-    if (isLoading) return;
+    if (fontsLoaded && !isLoading && isAnimationDone) {
+      SplashScreen.hideAsync();
+    }
+  }, [fontsLoaded, isLoading, isAnimationDone]);
+
+  useEffect(() => {
+    if (isLoading || !isAnimationDone) return;
 
     const isAuthRoute = segments[0] === '(tabs)' || segments[0] === 'chat';
     const isPublicRoute = segments[0] === 'login' || segments[0] === 'signup';
@@ -33,7 +50,11 @@ function RootLayoutNav() {
     }
   }, [isAuthenticated, segments, isLoading, session]);
 
-  if (isLoading) return null;
+  if (!fontsLoaded || !isAnimationDone) {
+    return <LoadingScreen onFinish={() => setIsAnimationDone(true)} />;
+  }
+
+  if (isLoading) return <LoadingScreen onFinish={() => setIsAnimationDone(true)} />;
 
   return (
     <ThemeProvider value={DarkTheme}>
