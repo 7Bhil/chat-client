@@ -6,7 +6,7 @@ import { deriveSharedSecret, encryptFile, decryptFile, encryptText, decryptText 
 import { getPrivateKey } from '../../utils/api';
 import { useAuth } from '../../utils/AuthContext';
 import { supabase } from '../../utils/supabase';
-import { Shield, Send, ArrowLeft, Lock, Image as ImageIcon, Clock, Trash2, LayoutGrid, X, Phone, Video } from 'lucide-react-native';
+import { Shield, Send, ArrowLeft, Lock, Image as ImageIcon, Clock, Trash2, LayoutGrid, X, Phone, Video, Eye, EyeOff } from 'lucide-react-native';
 import { WebView } from 'react-native-webview';
 import * as ImagePicker from 'expo-image-picker';
 import * as ScreenCapture from 'expo-screen-capture';
@@ -112,7 +112,7 @@ export default function ChatDetailScreen() {
             // Hide expired messages locally immediately
             if (msg.expires_at && new Date(msg.expires_at) < new Date()) return null;
 
-            if (baseType === 'image') {
+            if (baseType === 'image' || baseType === 'image-once') {
               content = await decryptFile(msg.encrypted_content, msg.nonce, sharedSecret);
             } else {
               content = await decryptText(msg.encrypted_content, msg.nonce, sharedSecret);
@@ -163,7 +163,7 @@ export default function ChatDetailScreen() {
               duration = parseInt(parts[1], 10);
           }
 
-          let decrypted = baseType === 'image' 
+          let decrypted = (baseType === 'image' || baseType === 'image-once') 
             ? await decryptFile(payload.new.encrypted_content, payload.new.nonce, sharedSecret)
             : await decryptText(payload.new.encrypted_content, payload.new.nonce, sharedSecret);
 
@@ -208,7 +208,7 @@ export default function ChatDetailScreen() {
       const privKey = await getPrivateKey(session.user.id);
       const sharedSecret = deriveSharedSecret(privKey!, publicKey as string);
 
-      const { encrypted, nonce } = type === 'image' 
+      const { encrypted, nonce } = (type === 'image' || type === 'image-once')
         ? await encryptFile(content, sharedSecret)
         : await encryptText(content, sharedSecret);
 
@@ -232,7 +232,54 @@ export default function ChatDetailScreen() {
 
   const pickImage = async () => {
     let result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, base64: true, quality: 0.5 });
-    if (!result.canceled && result.assets[0].base64) handleSend('image', result.assets[0].base64);
+    if (!result.canceled && result.assets[0].base64) {
+       Alert.alert(
+         'Send Photo',
+         'Choisissez le mode d\'envoi :',
+         [
+           { text: 'Annuler', style: 'cancel' },
+           { text: 'Normal', onPress: () => handleSend('image', result.assets[0].base64!) },
+           { text: 'Vue Unique 👁️', onPress: () => handleSend('image-once', result.assets[0].base64!) }
+         ]
+       );
+    }
+  };
+  
+  const ViewOnceImage = ({ item }: { item: any }) => {
+    const [viewed, setViewed] = useState(false);
+    const [fullscreen, setFullscreen] = useState(false);
+
+    if (item.sender === 'me') {
+      return <View style={styles.viewOnceBox}><Text style={styles.viewOnceText}><ImageIcon size={14} color={Theme.colors.textSecondary} /> Photo envoyée (Vue Unique)</Text></View>;
+    }
+
+    if (viewed) {
+      return <View style={styles.viewOnceBox}><Text style={styles.viewOnceText}><EyeOff size={14} color={Theme.colors.textSecondary} /> Photo détruite</Text></View>;
+    }
+
+    return (
+      <View>
+        <TouchableOpacity style={styles.viewOnceBoxActive} onPress={() => setFullscreen(true)}>
+          <Eye size={20} color={Theme.colors.primary} style={{marginBottom: 4}} />
+          <Text style={styles.viewOnceTextActive}>Appuyez pour voir</Text>
+        </TouchableOpacity>
+        {fullscreen && (
+          <Modal visible transparent animationType="fade">
+            <View style={{flex: 1, backgroundColor: '#000', justifyContent: 'center'}}>
+              <Image source={{ uri: `data:image/jpeg;base64,${item.text}` }} style={{width: '100%', height: '80%', resizeMode: 'contain'}} />
+              <TouchableOpacity style={{position: 'absolute', bottom: 40, alignSelf: 'center', backgroundColor: Theme.colors.error, padding: 15, borderRadius: 30}} onPress={() => {
+                 setFullscreen(false);
+                 setViewed(true);
+                 // Delete immediately from DB
+                 supabase.from('messages').delete().eq('id', item.id).then();
+              }}>
+                <Text style={{color: '#fff', fontWeight: 'bold', fontSize: 16}}>Fermer (Détruit la photo)</Text>
+              </TouchableOpacity>
+            </View>
+          </Modal>
+        )}
+      </View>
+    );
   };
 
   return (
@@ -258,7 +305,9 @@ export default function ChatDetailScreen() {
         <View style={[styles.messageContainer, item.sender === 'me' ? styles.myMessage : styles.otherMessage]}>
           {item.expiresAt && <Trash2 size={12} color={Theme.colors.textSecondary} style={{position:'absolute', top: 5, right: 5}} />}
           {(!item.expiresAt && item.sender === 'me' && item.type.includes(':') && !item.isRead) && <Clock size={12} color={Theme.colors.textSecondary} style={{position:'absolute', top: 5, right: 5}} />}
-          {item.type === 'image' ? <Image source={{ uri: `data:image/jpeg;base64,${item.text}` }} style={styles.messageImage} /> : <Text style={[styles.messageText, item.sender !== 'me' && styles.otherMessageText]}>{item.text}</Text>}
+          {item.type === 'image' && <Image source={{ uri: `data:image/jpeg;base64,${item.text}` }} style={styles.messageImage} />}
+          {item.type === 'image-once' && <ViewOnceImage item={item} />}
+          {(item.type === 'text' || (!item.type.includes('image'))) && <Text style={[styles.messageText, item.sender !== 'me' && styles.otherMessageText]}>{item.text}</Text>}
           <View style={styles.messageFooter}>
             <Text style={[styles.timestamp, item.sender !== 'me' && styles.otherTimestamp]}>{new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
             {item.sender === 'me' && <Text style={styles.readStatus}>{item.isRead ? '✓✓' : '✓'}</Text>}
@@ -376,5 +425,9 @@ const styles = StyleSheet.create({
   galleryImage: { width: '33%', aspectRatio: 1, margin: 1, borderRadius: 4 },
   emptyGallery: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 100 },
   emptyText: { color: Theme.colors.textSecondary, marginTop: Theme.spacing.md, fontSize: 16 },
+  viewOnceBox: { padding: 15, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: 10, borderWidth: 1, borderColor: Theme.colors.border },
+  viewOnceText: { color: Theme.colors.textSecondary, fontSize: 12, fontStyle: 'italic' },
+  viewOnceBoxActive: { padding: 20, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0, 229, 255, 0.1)', borderRadius: 10, borderWidth: 1, borderColor: Theme.colors.primary },
+  viewOnceTextActive: { color: Theme.colors.primary, fontSize: 14, fontWeight: 'bold' }
 });
 
