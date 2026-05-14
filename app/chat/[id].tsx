@@ -88,15 +88,31 @@ export default function ChatDetailScreen() {
 
         const sharedSecret = deriveSharedSecret(privKey, publicKey as string);
 
+        const unreadUpdates: {id: string, expires_at: string}[] = [];
+
         const processed = await Promise.all(data.map(async (msg) => {
           try {
             let content = null;
+            let baseType = msg.type;
+            let duration = null;
+
+            // Extraire la durée depuis le type sans corrompre la BDD existante
+            if (msg.type && msg.type.includes(':')) {
+              const parts = msg.type.split(':');
+              baseType = parts[0];
+              duration = parseInt(parts[1], 10);
+            }
             
+            // Démarrage du chronomètre SEULEMENT quand le récepteur lit le message
+            if (!msg.is_read && msg.receiver_id === session.user.id && duration && !msg.expires_at) {
+               msg.expires_at = new Date(Date.now() + duration * 1000).toISOString();
+               unreadUpdates.push({ id: msg.id, expires_at: msg.expires_at });
+            }
+
             // Hide expired messages locally immediately
             if (msg.expires_at && new Date(msg.expires_at) < new Date()) return null;
 
-            if (msg.type === 'image') {
-              // File encryption still uses sharedSecret (secretbox)
+            if (baseType === 'image') {
               content = await decryptFile(msg.encrypted_content, msg.nonce, sharedSecret);
             } else {
               content = await decryptText(msg.encrypted_content, msg.nonce, sharedSecret);
@@ -105,7 +121,7 @@ export default function ChatDetailScreen() {
             return {
               id: msg.id,
               text: content || '[Decryption Error]',
-              type: msg.type,
+              type: baseType,
               sender: msg.sender_id === session.user.id ? 'me' : 'other',
               timestamp: msg.created_at,
               isRead: msg.is_read,
@@ -113,18 +129,17 @@ export default function ChatDetailScreen() {
             };
           } catch (decErr) {
             console.error("Message decryption error:", decErr);
-            return {
-              id: msg.id,
-              text: '[Encrypted Message]',
-              type: 'text',
-              sender: msg.sender_id === session.user.id ? 'me' : 'other',
-              timestamp: msg.created_at,
-              isRead: msg.is_read
-            };
+            return null; // Ignore errors to avoid clutter
           }
         }));
 
         setMessages(processed.filter(m => m !== null));
+
+        // Met à jour l'heure de suppression pour tous les messages éphémères lus à l'instant
+        for (const update of unreadUpdates) {
+          await supabase.from('messages').update({ is_read: true, expires_at: update.expires_at }).eq('id', update.id);
+        }
+        
         await supabase.from('messages').update({ is_read: true }).eq('receiver_id', session.user.id).eq('sender_id', id);
       } catch (err) {
         console.error("fetchHistory error:", err);
@@ -140,14 +155,31 @@ export default function ChatDetailScreen() {
         const privKey = await getPrivateKey(session.user.id);
         if (privKey) {
           const sharedSecret = deriveSharedSecret(privKey, publicKey as string);
-          let decrypted = payload.new.type === 'image' 
+          let baseType = payload.new.type;
+          let duration = null;
+          if (payload.new.type && payload.new.type.includes(':')) {
+              const parts = payload.new.type.split(':');
+              baseType = parts[0];
+              duration = parseInt(parts[1], 10);
+          }
+
+          let decrypted = baseType === 'image' 
             ? await decryptFile(payload.new.encrypted_content, payload.new.nonce, sharedSecret)
             : await decryptText(payload.new.encrypted_content, payload.new.nonce, sharedSecret);
 
+          let computedExpiresAt = payload.new.expires_at;
+
+          // Si c'est éphémère, ça démarre MAINTENANT
+          if (duration) {
+              computedExpiresAt = new Date(Date.now() + duration * 1000).toISOString();
+              await supabase.from('messages').update({ is_read: true, expires_at: computedExpiresAt }).eq('id', payload.new.id);
+          } else {
+              await supabase.from('messages').update({ is_read: true }).eq('id', payload.new.id);
+          }
+
           setMessages(prev => [...prev, {
-            id: payload.new.id, text: decrypted || '[Decryption Error]', type: payload.new.type, sender: 'other', timestamp: payload.new.created_at, expiresAt: payload.new.expires_at
+            id: payload.new.id, text: decrypted || '[Decryption Error]', type: baseType, sender: 'other', timestamp: payload.new.created_at, expiresAt: computedExpiresAt
           }]);
-          await supabase.from('messages').update({ is_read: true }).eq('id', payload.new.id);
         }
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages' }, (payload) => {
@@ -180,19 +212,20 @@ export default function ChatDetailScreen() {
         ? await encryptFile(content, sharedSecret)
         : await encryptText(content, sharedSecret);
 
-      const expiresAt = expiry ? new Date(Date.now() + expiry * 1000).toISOString() : null;
+      const typeStr = expiry ? `${type}:${expiry}` : type;
 
+      // On n'envoie pas expires_at ! Ça sera décidé quand l'autre le lira.
       const { data, error } = await supabase.from('messages').insert({
         sender_id: session.user.id,
         receiver_id: id,
         encrypted_content: encrypted,
         nonce: nonce,
-        type: type,
-        expires_at: expiresAt
+        type: typeStr,
+        expires_at: null
       }).select().single();
 
       if (error) throw error;
-      setMessages(prev => [...prev, { id: data.id, text: content, type, sender: 'me', timestamp: data.created_at, isRead: false, expiresAt }]);
+      setMessages(prev => [...prev, { id: data.id, text: content, type, sender: 'me', timestamp: data.created_at, isRead: false, expiresAt: null }]);
       setMessage('');
     } catch (error) { Alert.alert('Error', 'Failed to send'); }
   };
@@ -224,6 +257,7 @@ export default function ChatDetailScreen() {
       <FlatList ref={flatListRef} data={messages} keyExtractor={(item) => item.id} renderItem={({item}) => (
         <View style={[styles.messageContainer, item.sender === 'me' ? styles.myMessage : styles.otherMessage]}>
           {item.expiresAt && <Trash2 size={12} color={Theme.colors.textSecondary} style={{position:'absolute', top: 5, right: 5}} />}
+          {(!item.expiresAt && item.sender === 'me' && item.type.includes(':') && !item.isRead) && <Clock size={12} color={Theme.colors.textSecondary} style={{position:'absolute', top: 5, right: 5}} />}
           {item.type === 'image' ? <Image source={{ uri: `data:image/jpeg;base64,${item.text}` }} style={styles.messageImage} /> : <Text style={[styles.messageText, item.sender !== 'me' && styles.otherMessageText]}>{item.text}</Text>}
           <View style={styles.messageFooter}>
             <Text style={[styles.timestamp, item.sender !== 'me' && styles.otherTimestamp]}>{new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
