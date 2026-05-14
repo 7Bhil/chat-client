@@ -134,13 +134,14 @@ export default function ChatDetailScreen() {
         }));
 
         setMessages(processed.filter(m => m !== null));
-
-        // Met à jour l'heure de suppression pour tous les messages éphémères lus à l'instant
-        for (const update of unreadUpdates) {
-          await supabase.from('messages').update({ is_read: true, expires_at: update.expires_at }).eq('id', update.id);
-        }
         
+        // Mark as read IMMEDIATELY
         await supabase.from('messages').update({ is_read: true }).eq('receiver_id', session.user.id).eq('sender_id', id);
+
+        // Update ephemeral messages if needed
+        for (const update of unreadUpdates) {
+          await supabase.from('messages').update({ expires_at: update.expires_at }).eq('id', update.id);
+        }
       } catch (err) {
         console.error("fetchHistory error:", err);
       }

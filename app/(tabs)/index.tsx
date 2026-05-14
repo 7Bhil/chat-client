@@ -1,6 +1,6 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { View, Text, StyleSheet, FlatList, TouchableOpacity, RefreshControl, Alert } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { Theme } from '../../constants/theme';
 import { Shield, MessageSquare, LogOut, ChevronRight, Circle, Lock } from 'lucide-react-native';
 import { useAuth } from '../../utils/AuthContext';
@@ -60,8 +60,14 @@ export default function ChatListScreen() {
     }
   };
 
+  useFocusEffect(
+    useCallback(() => {
+      fetchUsers();
+    }, [session?.user?.id])
+  );
+
   useEffect(() => {
-    fetchUsers();
+    // Initial fetch handled by focus effect
 
     if (!session?.user?.id) return;
     const channelId = 'online-users';
