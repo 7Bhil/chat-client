@@ -112,26 +112,24 @@ export default function ChatListScreen() {
 
     // 5. Écoute globale des nouveaux messages pour incrémenter les "non lus"
     // et faire remonter immédiatement le profil en haut de la liste
+    const syncUnreadCount = async (senderId: string) => {
+      const { count } = await supabase
+        .from('messages')
+        .select('*', { count: 'exact', head: true })
+        .eq('sender_id', senderId)
+        .eq('receiver_id', session.user.id)
+        .eq('is_read', false);
+      
+      setUsers(prev => prev.map(u => u.id === senderId ? { ...u, unreadCount: count || 0, latestInteraction: new Date().getTime() } : u).sort((a, b) => b.latestInteraction - a.latestInteraction));
+    };
+
     const globalMessagesChannel = supabase.channel('global-messages')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `receiver_id=eq.${session.user.id}` }, (payload) => {
-         setUsers(prev => {
-            const senderId = payload.new.sender_id;
-            return [...prev].map(u => {
-               if (u.id === senderId) {
-                  return { 
-                    ...u, 
-                    latestInteraction: new Date().getTime(), 
-                    unreadCount: (u.unreadCount || 0) + 1 
-                  };
-               }
-               return u;
-            }).sort((a, b) => b.latestInteraction - a.latestInteraction);
-         });
+          syncUnreadCount(payload.new.sender_id);
       })
-      // Pour annuler le unreadCount si on ferme le chat
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages', filter: `receiver_id=eq.${session.user.id}` }, (payload) => {
          if (payload.new.is_read) {
-           setUsers(prev => prev.map(u => u.id === payload.new.sender_id ? { ...u, unreadCount: Math.max(0, (u.unreadCount || 1) - 1) } : u));
+           syncUnreadCount(payload.new.sender_id);
          }
       })
       .subscribe();
