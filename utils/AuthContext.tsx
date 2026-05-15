@@ -41,7 +41,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = async () => {
     await supabase.auth.signOut();
-    // Clean up local storage to prevent session leakage
+    // ⚠️  DO NOT delete the private key here.
+    // The private key must survive across login sessions on the same device.
+    // If we delete it, the user loses access to all their encrypted message history
+    // and a new incompatible keypair will be generated on next login.
+    // The key is securely stored per userId so it won't leak to other accounts.
     await SecureStore.deleteItemAsync('token');
     await SecureStore.deleteItemAsync('user');
   };

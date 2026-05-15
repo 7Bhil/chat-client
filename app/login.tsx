@@ -6,13 +6,14 @@ import { SecureButton } from '../components/SecureButton';
 import { useAuth } from '../utils/AuthContext';
 import { supabase } from '../utils/supabase';
 import { getPrivateKey, storePrivateKey } from '../utils/api';
-import { generateKeyPair } from '../utils/encryption';
+import { generateKeyPair, deriveSharedSecret, encodeBase64, decodeBase64 } from '../utils/encryption';
 import * as SecureStore from 'expo-secure-store';
 import { Lock, User, Fingerprint } from 'lucide-react-native';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { Key, X, Fingerprint as FingerprintIcon } from 'lucide-react-native';
 import { Modal } from 'react-native';
 import { LoadingScreen } from '../components/LoadingScreen';
+import nacl from 'tweetnacl';
 
 
 export default function LoginScreen() {
@@ -87,7 +88,8 @@ export default function LoginScreen() {
 
     setLoading(true);
     try {
-      const virtualEmail = `${username.trim().toLowerCase()}@chat.app`;
+      const cleanUsername = username.trim().toLowerCase();
+      const virtualEmail = `${cleanUsername}@chat.app`;
       
       const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
         email: virtualEmail,
@@ -95,17 +97,70 @@ export default function LoginScreen() {
       });
 
       if (authError) throw authError;
-      
-      // Check if private key exists
+
+      // ── KEY INTEGRITY CHECK ──────────────────────────────────────────
+      // 1. Fetch the public key currently stored in DB for this user
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('public_key')
+        .eq('id', authData.user.id)
+        .single();
+
+      // 2. Get private key from this device's SecureStore
       const privKey = await getPrivateKey(authData.user.id);
-      if (!privKey) {
-          console.warn("Generating new keypair for this device...");
-          const keys = await generateKeyPair();
-          await storePrivateKey(authData.user.id, keys.privateKey);
-          await supabase.from('profiles').update({ public_key: keys.publicKey }).eq('id', authData.user.id);
-          Alert.alert('Notice de Sécurité', 'Nouveau dispositif détecté. Une nouvelle clé de chiffrement a été générée. Vos anciens messages sont illisibles, mais vous pouvez échanger de nouveaux messages en toute sécurité.');
+
+      if (!privKey || !profile?.public_key) {
+        // No local key found: this is a new device install
+        console.warn('[Crypto] No local private key — generating fresh keypair for this device');
+        const keys = await generateKeyPair();
+        await storePrivateKey(authData.user.id, keys.privateKey);
+        await supabase
+          .from('profiles')
+          .update({ public_key: keys.publicKey })
+          .eq('id', authData.user.id);
+        Alert.alert(
+          '⚠️ Notice de Sécurité',
+          'Appareil/installation non reconnu(e). De nouvelles clés de chiffrement ont été créées.\n\nVos anciens messages chiffrés sont inaccessibles sur cet appareil, mais les nouveaux messages fonctionneront normalement.',
+          [{ text: 'Compris', style: 'default' }]
+        );
+      } else {
+        // 3. ══ IMPORTANT ══ Verify that local private key matches DB public key
+        //    Derive the public key from the stored private key and compare
+        try {
+          const privBytes = decodeBase64(privKey.trim());
+          if (privBytes.length === 32) {
+            const derivedKeyPair = nacl.box.keyPair.fromSecretKey(privBytes);
+            const derivedPubKey = encodeBase64(derivedKeyPair.publicKey);
+            const dbPubKey = profile.public_key.trim();
+
+            if (derivedPubKey !== dbPubKey) {
+              // ⚠️ Mismatch: local private key doesn't match DB public key
+              // This means someone logged in from another device previously and regenerated keys
+              console.error('[Crypto] KEY MISMATCH detected!');
+              console.error('  Derived from local privKey:', derivedPubKey.substring(0, 16));
+              console.error('  DB public key:             ', dbPubKey.substring(0, 16));
+
+              // Fix: re-publish the correct public key to DB so future contacts can encrypt to us
+              await supabase
+                .from('profiles')
+                .update({ public_key: derivedPubKey })
+                .eq('id', authData.user.id);
+
+              Alert.alert(
+                '🔑 Clés resynchronisées',
+                'Votre clé publique en base de données ne correspondait pas à votre clé locale.\n\nElle a été automatiquement corrigée. Les nouveaux messages seront chiffrés correctement.',
+                [{ text: 'OK' }]
+              );
+            } else {
+              console.log('[Crypto] ✅ Key integrity check passed — keys are in sync');
+            }
+          }
+        } catch (keyCheckErr) {
+          console.error('[Crypto] Key integrity check failed:', keyCheckErr);
+        }
       }
-      
+      // ── END KEY INTEGRITY CHECK ──────────────────────────────────────
+
       router.replace('/(tabs)');
     } catch (error: any) {
       console.error(error);
@@ -170,7 +225,7 @@ export default function LoginScreen() {
           )}
 
           <TouchableOpacity onPress={() => router.push('/signup')} style={styles.link}>
-            <Text style={styles.linkText}>Don't have an account? Sign up</Text>
+            <Text style={styles.linkText}>Don&apos;t have an account? Sign up</Text>
           </TouchableOpacity>
         </View>
       </ScrollView>

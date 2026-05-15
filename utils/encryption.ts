@@ -1,37 +1,22 @@
 import nacl from 'tweetnacl';
 import * as base64 from 'base64-js';
 
-// ─────────────────────────────────────────────
-// PROVEN UTF-8 TO BINARY (Standard method)
-// ─────────────────────────────────────────────
-const b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
-
-const stringToUint8 = (str: string): Uint8Array => {
-  const utf8 = unescape(encodeURIComponent(str));
-  const arr = new Uint8Array(utf8.length);
-  for (let i = 0; i < utf8.length; i++) {
-    arr[i] = utf8.charCodeAt(i);
-  }
-  return arr;
-};
-
-const uint8ToString = (arr: Uint8Array): string => {
-  let utf8 = '';
-  for (let i = 0; i < arr.length; i++) {
-    utf8 += String.fromCharCode(arr[i]);
-  }
-  try {
-    return decodeURIComponent(escape(utf8));
-  } catch {
-    return utf8;
-  }
-};
+// Use TextEncoder/Decoder for reliable UTF-8 handling (Polyfilled in _layout.tsx)
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 
 export const encodeBase64 = (arr: Uint8Array): string => base64.fromByteArray(arr);
+
 export const decodeBase64 = (str: string): Uint8Array => {
-  if (!str) return new Uint8Array(0);
-  const clean = str.replace(/[^A-Za-z0-9+/=]/g, "");
-  return base64.toByteArray(clean);
+  if (!str || typeof str !== 'string') return new Uint8Array(0);
+  try {
+    // Clean string from any potential whitespace or non-base64 chars
+    const clean = str.trim().replace(/[^A-Za-z0-9+/=]/g, "");
+    return base64.toByteArray(clean);
+  } catch (e) {
+    console.error("Base64 Decode Error:", e);
+    return new Uint8Array(0);
+  }
 };
 
 // ─────────────────────────────────────────────
@@ -58,18 +43,24 @@ export const deriveSharedSecret = (
   theirPublicKey: string
 ): Uint8Array => {
   try {
-    const priv = decodeBase64(myPrivateKey.trim());
-    const pub = decodeBase64(theirPublicKey.trim());
+    const priv = decodeBase64(myPrivateKey);
+    const pub = decodeBase64(theirPublicKey);
     
     if (priv.length !== 32 || pub.length !== 32) {
-      throw new Error("Invalid keys");
+      throw new Error(`Invalid keys length: priv=${priv.length}, pub=${pub.length}`);
     }
     
-    // commun output of Curve25519
-    return nacl.box.before(pub, priv);
+    // Compute shared secret
+    const shared = nacl.box.before(pub, priv);
+    if (!shared || shared.length !== 32) {
+      throw new Error("Shared secret derivation failed");
+    }
+    
+    return shared;
   } catch (e) {
     console.error("ECDH Error:", e);
-    return new Uint8Array(32);
+    // Return a distinguishable "invalid" key rather than zeros
+    return new Uint8Array(32).fill(1); 
   }
 };
 
@@ -81,7 +72,9 @@ export const encryptText = async (
   sharedSecret: Uint8Array
 ): Promise<{ encrypted: string; nonce: string }> => {
   const nonce = nacl.randomBytes(nacl.secretbox.nonceLength);
-  const encrypted = nacl.secretbox(stringToUint8(message), nonce, sharedSecret);
+  const messageUint8 = encoder.encode(message);
+  const encrypted = nacl.secretbox(messageUint8, nonce, sharedSecret);
+  
   return {
     encrypted: encodeBase64(encrypted),
     nonce: encodeBase64(nonce),
@@ -94,13 +87,21 @@ export const decryptText = async (
   sharedSecret: Uint8Array
 ): Promise<string | null> => {
   try {
-    const decrypted = nacl.secretbox.open(
-      decodeBase64(encryptedBase64),
-      decodeBase64(nonceBase64),
-      sharedSecret
-    );
-    return decrypted ? uint8ToString(decrypted) : null;
+    const encrypted = decodeBase64(encryptedBase64);
+    const nonce = decodeBase64(nonceBase64);
+    
+    if (encrypted.length === 0 || nonce.length === 0) return null;
+
+    const decrypted = nacl.secretbox.open(encrypted, nonce, sharedSecret);
+    
+    if (!decrypted) {
+      console.warn("[Crypto] Decryption failed (invalid key or corrupted data)");
+      return null;
+    }
+    
+    return decoder.decode(decrypted);
   } catch (e) {
+    console.error("[Crypto] Decrypt Text Exception:", e);
     return null;
   }
 };
@@ -112,6 +113,7 @@ export const encryptFile = async (
   const binary = decodeBase64(base64Data);
   const nonce = nacl.randomBytes(nacl.secretbox.nonceLength);
   const encrypted = nacl.secretbox(binary, nonce, sharedSecret);
+  
   return {
     encrypted: encodeBase64(encrypted),
     nonce: encodeBase64(nonce),
@@ -124,13 +126,15 @@ export const decryptFile = async (
   sharedSecret: Uint8Array
 ): Promise<string | null> => {
   try {
-    const decrypted = nacl.secretbox.open(
-      decodeBase64(encryptedBase64),
-      decodeBase64(nonceBase64),
-      sharedSecret
-    );
+    const encrypted = decodeBase64(encryptedBase64);
+    const nonce = decodeBase64(nonceBase64);
+    
+    if (encrypted.length === 0 || nonce.length === 0) return null;
+
+    const decrypted = nacl.secretbox.open(encrypted, nonce, sharedSecret);
     return decrypted ? encodeBase64(decrypted) : null;
-  } catch {
+  } catch (e) {
+    console.error("[Crypto] Decrypt File Exception:", e);
     return null;
   }
 };

@@ -6,7 +6,7 @@ import { supabase } from '../../utils/supabase';
 import { useAuth } from '../../utils/AuthContext';
 import { encryptText, decryptText, deriveSharedSecret, encryptFile, decryptFile } from '../../utils/encryption';
 import { getPrivateKey } from '../../utils/api';
-import { Send, Camera, Image as ImageIcon, Clock, X } from 'lucide-react-native';
+import { Send, Camera, Image as ImageIcon, Clock, X, Trash2 } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LoadingScreen } from '../../components/LoadingScreen';
@@ -19,6 +19,8 @@ const EXPIRY_OPTIONS = [
   { label: '1h', seconds: 3600 },
   { label: '1d', seconds: 86400 },
 ];
+
+const LOCKED_TEXT = '[🔒 Clés désynchronisées]';
 
 export default function ChatDetailScreen() {
   const { id, username, publicKey: initialPublicKey } = useLocalSearchParams();
@@ -34,15 +36,30 @@ export default function ChatDetailScreen() {
 
   // The shared secret is computed once and stored in a ref for the whole session
   const sharedSecretRef = useRef<Uint8Array | null>(null);
+  // Track the active Supabase channel to avoid duplicate subscriptions
+  const channelRef = useRef<any>(null);
+  // Guard against concurrent initChat calls (React StrictMode / re-renders)
+  const isInitiatingRef = useRef(false);
 
   useEffect(() => {
     if (session?.user && id) {
       initChat();
     }
+    // Cleanup: unsubscribe from the channel when leaving the screen
+    return () => {
+      if (channelRef.current) {
+        supabase.removeChannel(channelRef.current);
+        channelRef.current = null;
+      }
+    };
   }, [session?.user?.id, id]);
 
   const initChat = async () => {
     if (!session?.user) return;
+    // Prevent concurrent calls (React StrictMode double-invocation)
+    if (isInitiatingRef.current) return;
+    isInitiatingRef.current = true;
+
     setIsInitializing(true);
     try {
       // 1. Always fetch fresh public key from DB
@@ -54,7 +71,6 @@ export default function ChatDetailScreen() {
 
       if (!profile?.public_key) {
         Alert.alert('Error', 'Could not load contact keys.');
-        setIsInitializing(false);
         return;
       }
       const theirPubKey = profile.public_key.trim();
@@ -63,17 +79,18 @@ export default function ChatDetailScreen() {
       const myPrivKey = await getPrivateKey(session.user.id);
       if (!myPrivKey) {
         Alert.alert('Error', 'Your encryption key is missing. Please log out and log back in.');
-        setIsInitializing(false);
         return;
       }
 
       // 3. Compute shared secret ONCE and keep it in a ref
       sharedSecretRef.current = deriveSharedSecret(myPrivKey.trim(), theirPubKey);
+      const secretFingerprint = Array.from(sharedSecretRef.current.slice(0, 8)).join(',');
+      console.log(`[Crypto] initChat — Shared Secret Fingerprint: [${secretFingerprint}]`);
 
       // 4. Fetch message history
       await fetchHistory(sharedSecretRef.current, session.user.id);
 
-      // 5. Subscribe to new messages
+      // 5. Subscribe to new messages (unsubscribe first if already subscribed)
       subscribeToMessages(sharedSecretRef.current, session.user.id);
 
       // 6. Mark all as read
@@ -86,6 +103,7 @@ export default function ChatDetailScreen() {
       console.error('initChat error:', err);
     } finally {
       setIsInitializing(false);
+      isInitiatingRef.current = false;
     }
   };
 
@@ -98,24 +116,35 @@ export default function ChatDetailScreen() {
 
     if (error || !data) return;
 
+    // Debug: log the shared secret fingerprint to verify both sides compute the same one
+    const secretFingerprint = Array.from(secret.slice(0, 8)).join(',');
+    console.log(`[Crypto] fetchHistory — Secret Fingerprint: [${secretFingerprint}]`);
+    console.log(`[Crypto] Attempting to decrypt ${data.length} messages...`);
+
     const decoded = await Promise.all(data.map(async (msg) => {
       try {
         if (msg.expires_at && new Date(msg.expires_at) < new Date()) return null;
         const baseType = msg.type?.split(':')[0] || 'text';
         const isImage = baseType === 'image' || baseType === 'image-once';
+        
         const content = isImage
           ? await decryptFile(msg.encrypted_content, msg.nonce, secret)
           : await decryptText(msg.encrypted_content, msg.nonce, secret);
 
+        if (!content) {
+          console.warn(`[Crypto] ❌ Decryption FAILED for message ${msg.id}. Sent by: ${msg.sender_id === myUserId ? 'Me' : 'Them'}`);
+        }
+
         return {
           id: msg.id,
-          text: content ?? '[Clés désynchronisées ou version incompatible]',
+          text: content ?? '[🔒 Clés désynchronisées]',
           type: msg.type,
           sender: msg.sender_id === myUserId ? 'me' : 'other',
           timestamp: msg.created_at,
           expiresAt: msg.expires_at,
         };
-      } catch {
+      } catch (e) {
+        console.error('[Crypto] Exception decrypt msg', msg.id, e);
         return null;
       }
     }));
@@ -124,31 +153,49 @@ export default function ChatDetailScreen() {
   };
 
   const subscribeToMessages = (secret: Uint8Array, myUserId: string) => {
-    supabase
-      .channel(`chat:${id}:${myUserId}`)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `receiver_id=eq.${myUserId}` }, async (payload) => {
-        if (payload.new.sender_id !== id) return;
-        try {
-          const baseType = payload.new.type?.split(':')[0] || 'text';
-          const isImage = baseType === 'image' || baseType === 'image-once';
-          const content = isImage
-            ? await decryptFile(payload.new.encrypted_content, payload.new.nonce, secret)
-            : await decryptText(payload.new.encrypted_content, payload.new.nonce, secret);
+    // ── Remove any existing channel before creating a new one ──
+    if (channelRef.current) {
+      supabase.removeChannel(channelRef.current);
+      channelRef.current = null;
+    }
 
-          if (content) {
-            setMessages(prev => [...prev, {
-              id: payload.new.id,
-              text: content,
-              type: payload.new.type,
-              sender: 'other',
-              timestamp: payload.new.created_at,
-              expiresAt: payload.new.expires_at,
-            }]);
-            await supabase.from('messages').update({ is_read: true }).eq('id', payload.new.id);
-          }
-        } catch (e) { console.error('RT decrypt error', e); }
-      })
-      .subscribe();
+    const channelName = `chat:${myUserId}:${id}`;
+    const channel = supabase
+      .channel(channelName)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'messages', filter: `receiver_id=eq.${myUserId}` },
+        async (payload) => {
+          if (payload.new.sender_id !== id) return;
+          try {
+            const baseType = payload.new.type?.split(':')[0] || 'text';
+            const isImage = baseType === 'image' || baseType === 'image-once';
+            const content = isImage
+              ? await decryptFile(payload.new.encrypted_content, payload.new.nonce, secret)
+              : await decryptText(payload.new.encrypted_content, payload.new.nonce, secret);
+
+            if (content) {
+              setMessages(prev => [...prev, {
+                id: payload.new.id,
+                text: content,
+                type: payload.new.type,
+                sender: 'other',
+                timestamp: payload.new.created_at,
+                expiresAt: payload.new.expires_at,
+              }]);
+              await supabase.from('messages').update({ is_read: true }).eq('id', payload.new.id);
+            } else {
+              console.warn('[Crypto] RT decrypt failed for incoming msg', payload.new.id);
+            }
+          } catch (e) { console.error('[Crypto] RT decrypt error', e); }
+        }
+      )
+      .subscribe((status) => {
+        console.log('[Realtime] channel status:', status);
+      });
+
+    // Store channel ref for cleanup
+    channelRef.current = channel;
   };
 
   useEffect(() => {
@@ -161,8 +208,9 @@ export default function ChatDetailScreen() {
       if (session?.user?.id && id) {
         AsyncStorage.setItem(`last_read_${session.user.id}_${id}`, String(Date.now())).catch(() => {});
       }
+      // Channel cleanup is handled in the initChat useEffect
     };
-  }, [session?.user?.id, id]);
+  }, []);
 
   const handleSend = async (type = 'text', content = message) => {
     if (!content.trim() || !session?.user || !sharedSecretRef.current) return;
@@ -219,6 +267,29 @@ export default function ChatDetailScreen() {
     }
   };
 
+  // Deletes ALL messages in this conversation from the DB (both sides)
+  // Used when old messages can't be decrypted due to key rotation
+  const clearHistory = () => {
+    Alert.alert(
+      '🗑️ Effacer la conversation',
+      'Les messages chiffrés avec d&apos;anciennes clés sont illisibles. Voulez-vous supprimer toute la conversation ?\n\nCette action est irréversible.',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Effacer',
+          style: 'destructive',
+          onPress: async () => {
+            if (!session?.user) return;
+            // Delete all messages between the two users
+            await supabase.from('messages').delete()
+              .or(`and(sender_id.eq.${session.user.id},receiver_id.eq.${id}),and(sender_id.eq.${id},receiver_id.eq.${session.user.id})`);
+            setMessages([]);
+          },
+        },
+      ]
+    );
+  };
+
   return (
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.container}>
       <View style={styles.header}>
@@ -226,9 +297,14 @@ export default function ChatDetailScreen() {
           <X color={Theme.colors.text} size={24} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>{username}</Text>
-        <TouchableOpacity onPress={() => setShowExpiryModal(true)} style={styles.expiryBtn}>
-          <Clock color={expiry ? Theme.colors.primary : Theme.colors.textSecondary} size={24} />
-        </TouchableOpacity>
+        <View style={styles.headerActions}>
+          <TouchableOpacity onPress={() => setShowExpiryModal(true)} style={styles.expiryBtn}>
+            <Clock color={expiry ? Theme.colors.primary : Theme.colors.textSecondary} size={22} />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={clearHistory} style={styles.expiryBtn}>
+            <Trash2 color={Theme.colors.textSecondary} size={22} />
+          </TouchableOpacity>
+        </View>
       </View>
 
       {isInitializing ? (
@@ -239,18 +315,38 @@ export default function ChatDetailScreen() {
           data={messages}
           keyExtractor={(item) => item.id}
           onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: false })}
-          renderItem={({ item }) => (
-            <View style={[styles.messageContainer, item.sender === 'me' ? styles.myMessage : styles.otherMessage]}>
-              {(item.type?.startsWith('image'))
-                ? <Image source={{ uri: `data:image/jpeg;base64,${item.text}` }} style={styles.messageImage} />
-                : <Text style={styles.messageText}>{item.text}</Text>
-              }
-              <Text style={styles.messageTime}>
-                {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-              </Text>
-            </View>
-          )}
+          renderItem={({ item }) => {
+            const isLocked = item.text === LOCKED_TEXT;
+            return (
+              <View style={[styles.messageContainer, item.sender === 'me' ? styles.myMessage : styles.otherMessage, isLocked && styles.lockedMessage]}>
+                {(item.type?.startsWith('image') && !isLocked)
+                  ? <Image source={{ uri: `data:image/jpeg;base64,${item.text}` }} style={styles.messageImage} />
+                  : <Text style={[styles.messageText, isLocked && styles.lockedText]}>{item.text}</Text>
+                }
+                <Text style={styles.messageTime}>
+                  {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </Text>
+              </View>
+            );
+          }}
           style={styles.list}
+          ListHeaderComponent={() => {
+            // Show banner if ALL messages are unreadable
+            const allLocked = messages.length > 0 && messages.every(m => m.text === LOCKED_TEXT);
+            if (!allLocked) return null;
+            return (
+              <View style={styles.keyErrorBanner}>
+                <Text style={styles.keyErrorTitle}>🔐 Clés de chiffrement modifiées</Text>
+                <Text style={styles.keyErrorBody}>
+                  Ces messages ont été chiffrés avec d&apos;anciennes clés qui ne sont plus disponibles sur cet appareil. Ils sont définitivement inaccessibles.
+                </Text>
+                <TouchableOpacity style={styles.keyErrorBtn} onPress={clearHistory}>
+                  <Trash2 size={14} color="#fff" />
+                  <Text style={styles.keyErrorBtnText}>Effacer la conversation</Text>
+                </TouchableOpacity>
+              </View>
+            );
+          }}
         />
       )}
 
@@ -317,6 +413,7 @@ const styles = StyleSheet.create({
   },
   backBtn: { padding: Theme.spacing.sm },
   headerTitle: { flex: 1, fontSize: 18, fontWeight: '700', color: Theme.colors.text, textAlign: 'center' },
+  headerActions: { flexDirection: 'row', alignItems: 'center' },
   expiryBtn: { padding: Theme.spacing.sm },
   list: { flex: 1, padding: Theme.spacing.md },
   messageContainer: {
@@ -325,7 +422,9 @@ const styles = StyleSheet.create({
   },
   myMessage: { alignSelf: 'flex-end', backgroundColor: Theme.colors.primary + '30', borderBottomRightRadius: 0 },
   otherMessage: { alignSelf: 'flex-start', backgroundColor: Theme.colors.surface, borderBottomLeftRadius: 0 },
+  lockedMessage: { opacity: 0.5, borderWidth: 1, borderColor: Theme.colors.border, borderStyle: 'dashed' },
   messageText: { color: Theme.colors.text, fontSize: 16 },
+  lockedText: { color: Theme.colors.textSecondary, fontSize: 13, fontStyle: 'italic' },
   messageImage: { width: 200, height: 200, borderRadius: Theme.borderRadius.md },
   messageTime: { fontSize: 10, color: Theme.colors.textSecondary, alignSelf: 'flex-end', marginTop: 4 },
   inputArea: {
@@ -348,4 +447,39 @@ const styles = StyleSheet.create({
   modalTitle: { fontSize: 20, fontWeight: '700', color: Theme.colors.text, marginBottom: Theme.spacing.md, textAlign: 'center' },
   modalOption: { flexDirection: 'row', alignItems: 'center', gap: Theme.spacing.md, paddingVertical: Theme.spacing.md },
   modalOptionText: { fontSize: 18, color: Theme.colors.text },
+  keyErrorBanner: {
+    backgroundColor: Theme.colors.surface,
+    padding: Theme.spacing.lg,
+    borderRadius: Theme.borderRadius.lg,
+    marginBottom: Theme.spacing.lg,
+    borderWidth: 1,
+    borderColor: Theme.colors.border,
+    alignItems: 'center',
+  },
+  keyErrorTitle: {
+    color: Theme.colors.text,
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: Theme.spacing.xs,
+  },
+  keyErrorBody: {
+    color: Theme.colors.textSecondary,
+    fontSize: 14,
+    textAlign: 'center',
+    marginBottom: Theme.spacing.md,
+  },
+  keyErrorBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#ef4444',
+    paddingHorizontal: Theme.spacing.md,
+    paddingVertical: Theme.spacing.sm,
+    borderRadius: Theme.borderRadius.md,
+    gap: Theme.spacing.xs,
+  },
+  keyErrorBtnText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
 });

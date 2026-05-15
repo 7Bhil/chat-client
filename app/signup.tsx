@@ -71,7 +71,8 @@ export default function SignupScreen() {
 
       // 4. Supabase Signup
       // Create a virtual email for Supabase Auth
-      const virtualEmail = `${username.trim().toLowerCase()}@chat.app`;
+      const cleanUsername = username.trim().toLowerCase();
+      const virtualEmail = `${cleanUsername}@chat.app`;
       
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email: virtualEmail,
@@ -86,7 +87,7 @@ export default function SignupScreen() {
           .from('profiles')
           .insert({
             id: authData.user.id,
-            username: username.trim(),
+            username: username.trim(), // Keep original display casing for profile
             public_key: keys.publicKey,
           });
 
