@@ -2,20 +2,42 @@ import nacl from 'tweetnacl';
 import * as base64 from 'base64-js';
 
 // ─────────────────────────────────────────────
-// Conversion helpers
+// Robust UTF-8 conversion without TextEncoder
 // ─────────────────────────────────────────────
-const enc = new TextEncoder();
-const dec = new TextDecoder();
+const stringToUint8 = (str: string): Uint8Array => {
+  const utf8 = unescape(encodeURIComponent(str));
+  const arr = new Uint8Array(utf8.length);
+  for (let i = 0; i < utf8.length; i++) {
+    arr[i] = utf8.charCodeAt(i);
+  }
+  return arr;
+};
+
+const uint8ToString = (arr: Uint8Array): string => {
+  let utf8 = '';
+  for (let i = 0; i < arr.length; i++) {
+    utf8 += String.fromCharCode(arr[i]);
+  }
+  try {
+    return decodeURIComponent(escape(utf8));
+  } catch {
+    return utf8; // Fallback to raw string
+  }
+};
 
 export const encodeBase64 = (arr: Uint8Array): string => base64.fromByteArray(arr);
-export const decodeBase64 = (str: string): Uint8Array => base64.toByteArray(str);
+export const decodeBase64 = (str: string): Uint8Array => {
+  // Ensure the string is clean base64
+  const clean = str.replace(/[^A-Za-z0-9+/=]/g, "");
+  return base64.toByteArray(clean);
+};
 
 // ─────────────────────────────────────────────
 // Key generation
 // ─────────────────────────────────────────────
 export interface KeyPair {
-  publicKey: string;  // base64
-  privateKey: string; // base64
+  publicKey: string;
+  privateKey: string;
 }
 
 export const generateKeyPair = async (): Promise<KeyPair> => {
@@ -28,34 +50,38 @@ export const generateKeyPair = async (): Promise<KeyPair> => {
 
 // ─────────────────────────────────────────────
 // Shared secret derivation (ECDH)
-// Alice & Bob compute the same 32-byte secret:
-//   shared = ECDH(alicePriv, bobPub) == ECDH(bobPriv, alicePub)
 // ─────────────────────────────────────────────
 export const deriveSharedSecret = (
   myPrivateKey: string,
   theirPublicKey: string
 ): Uint8Array => {
-  const priv = decodeBase64(myPrivateKey.trim());
-  const pub  = decodeBase64(theirPublicKey.trim());
-  // nacl.box.before = X25519 DH, returns the 32-byte HSalsa20 output
-  return nacl.box.before(pub, priv);
+  try {
+    const priv = decodeBase64(myPrivateKey.trim());
+    const pub = decodeBase64(theirPublicKey.trim());
+    
+    if (priv.length !== 32 || pub.length !== 32) {
+      throw new Error("Invalid key length");
+    }
+    
+    return nacl.box.before(pub, priv);
+  } catch (e) {
+    console.error("Shared secret derivation failed:", e);
+    return new Uint8Array(32); // Return empty key to avoid crash, decryption will fail gracefully
+  }
 };
 
 // ─────────────────────────────────────────────
-// Text encryption / decryption  (nacl.secretbox)
-// Both sides derive the SAME sharedSecret, so
-// encrypt(msg, secret) can always be
-// decrypted with the same secret.
+// Text encryption / decryption
 // ─────────────────────────────────────────────
 export const encryptText = async (
   message: string,
   sharedSecret: Uint8Array
 ): Promise<{ encrypted: string; nonce: string }> => {
-  const nonce     = nacl.randomBytes(nacl.secretbox.nonceLength);
-  const encrypted = nacl.secretbox(enc.encode(message), nonce, sharedSecret);
+  const nonce = nacl.randomBytes(nacl.secretbox.nonceLength);
+  const encrypted = nacl.secretbox(stringToUint8(message), nonce, sharedSecret);
   return {
     encrypted: encodeBase64(encrypted),
-    nonce:     encodeBase64(nonce),
+    nonce: encodeBase64(nonce),
   };
 };
 
@@ -70,24 +96,25 @@ export const decryptText = async (
       decodeBase64(nonceBase64),
       sharedSecret
     );
-    return decrypted ? dec.decode(decrypted) : null;
+    return decrypted ? uint8ToString(decrypted) : null;
   } catch {
     return null;
   }
 };
 
 // ─────────────────────────────────────────────
-// File / image encryption  (nacl.secretbox)
+// File / image encryption
 // ─────────────────────────────────────────────
 export const encryptFile = async (
   base64Data: string,
   sharedSecret: Uint8Array
 ): Promise<{ encrypted: string; nonce: string }> => {
-  const nonce     = nacl.randomBytes(nacl.secretbox.nonceLength);
-  const encrypted = nacl.secretbox(decodeBase64(base64Data), nonce, sharedSecret);
+  const binary = decodeBase64(base64Data);
+  const nonce = nacl.randomBytes(nacl.secretbox.nonceLength);
+  const encrypted = nacl.secretbox(binary, nonce, sharedSecret);
   return {
     encrypted: encodeBase64(encrypted),
-    nonce:     encodeBase64(nonce),
+    nonce: encodeBase64(nonce),
   };
 };
 

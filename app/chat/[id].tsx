@@ -109,7 +109,7 @@ export default function ChatDetailScreen() {
 
         return {
           id: msg.id,
-          text: content ?? '[Message from older version — unreadable]',
+          text: content ?? '[Clés désynchronisées ou version incompatible]',
           type: msg.type,
           sender: msg.sender_id === myUserId ? 'me' : 'other',
           timestamp: msg.created_at,
