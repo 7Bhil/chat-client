@@ -2,7 +2,7 @@
   "expo": {
     "name": "Anonyme",
     "slug": "anonyme",
-    "version": "1.2.1",
+    "version": "1.2.2",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "anonyme",
@@ -14,7 +14,7 @@
     },
     "android": {
       "package": "com.anonyme.chat",
-      "versionCode": 15,
+      "versionCode": 16,
       "adaptiveIcon": {
         "backgroundColor": "#000000",
         "foregroundImage": "./assets/images/icon.png"

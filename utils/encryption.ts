@@ -2,8 +2,10 @@ import nacl from 'tweetnacl';
 import * as base64 from 'base64-js';
 
 // ─────────────────────────────────────────────
-// Robust UTF-8 conversion without TextEncoder
+// PROVEN UTF-8 TO BINARY (Standard method)
 // ─────────────────────────────────────────────
+const b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+
 const stringToUint8 = (str: string): Uint8Array => {
   const utf8 = unescape(encodeURIComponent(str));
   const arr = new Uint8Array(utf8.length);
@@ -21,13 +23,13 @@ const uint8ToString = (arr: Uint8Array): string => {
   try {
     return decodeURIComponent(escape(utf8));
   } catch {
-    return utf8; // Fallback to raw string
+    return utf8;
   }
 };
 
 export const encodeBase64 = (arr: Uint8Array): string => base64.fromByteArray(arr);
 export const decodeBase64 = (str: string): Uint8Array => {
-  // Ensure the string is clean base64
+  if (!str) return new Uint8Array(0);
   const clean = str.replace(/[^A-Za-z0-9+/=]/g, "");
   return base64.toByteArray(clean);
 };
@@ -49,7 +51,7 @@ export const generateKeyPair = async (): Promise<KeyPair> => {
 };
 
 // ─────────────────────────────────────────────
-// Shared secret derivation (ECDH)
+// SHARED SECRET (X25519)
 // ─────────────────────────────────────────────
 export const deriveSharedSecret = (
   myPrivateKey: string,
@@ -60,18 +62,19 @@ export const deriveSharedSecret = (
     const pub = decodeBase64(theirPublicKey.trim());
     
     if (priv.length !== 32 || pub.length !== 32) {
-      throw new Error("Invalid key length");
+      throw new Error("Invalid keys");
     }
     
+    // commun output of Curve25519
     return nacl.box.before(pub, priv);
   } catch (e) {
-    console.error("Shared secret derivation failed:", e);
-    return new Uint8Array(32); // Return empty key to avoid crash, decryption will fail gracefully
+    console.error("ECDH Error:", e);
+    return new Uint8Array(32);
   }
 };
 
 // ─────────────────────────────────────────────
-// Text encryption / decryption
+// CIPHER (Salsa20 + Poly1305)
 // ─────────────────────────────────────────────
 export const encryptText = async (
   message: string,
@@ -97,14 +100,11 @@ export const decryptText = async (
       sharedSecret
     );
     return decrypted ? uint8ToString(decrypted) : null;
-  } catch {
+  } catch (e) {
     return null;
   }
 };
 
-// ─────────────────────────────────────────────
-// File / image encryption
-// ─────────────────────────────────────────────
 export const encryptFile = async (
   base64Data: string,
   sharedSecret: Uint8Array
