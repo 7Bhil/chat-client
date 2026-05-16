@@ -36,3 +36,5 @@ jobs:
 
       - name: 🔨 Build local APK
         run: eas build --platform android --profile preview --local --non-interactive
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
