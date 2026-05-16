@@ -35,4 +35,4 @@ jobs:
         run: npm ci
 
       - name: 🔨 Build local APK
-        run: npx eas build --platform android --profile preview --local --non-interactive
+        run: eas build --platform android --profile preview --local --non-interactive
