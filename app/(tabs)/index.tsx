@@ -39,15 +39,26 @@ export default function ChatListScreen() {
         const chatMessages = messages?.filter(m => m.sender_id === profile.id || m.receiver_id === profile.id) || [];
         const latestMsg = chatMessages.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
         
-        const lastReadStr = await AsyncStorage.getItem(`last_read_${session.user.id}_${profile.id}`);
-        const lastReadTime = lastReadStr ? parseInt(lastReadStr, 10) : 0;
+        const lastInteractionStr = await AsyncStorage.getItem(`last_interaction_${session.user.id}_${profile.id}`);
+        let latestInteraction = lastInteractionStr ? parseInt(lastInteractionStr, 10) : 0;
         
-        // Count messages sent by them strictly AFTER our last local read time
-        const unreadCount = chatMessages.filter(m => m.sender_id === profile.id && new Date(m.created_at).getTime() > lastReadTime).length;
+        if (latestMsg && new Date(latestMsg.created_at).getTime() > latestInteraction) {
+           latestInteraction = new Date(latestMsg.created_at).getTime();
+           AsyncStorage.setItem(`last_interaction_${session.user.id}_${profile.id}`, latestInteraction.toString()).catch(()=>{});
+        }
+        
+        const lastOpenedStr = await AsyncStorage.getItem(`last_opened_${session.user.id}_${profile.id}`);
+        const lastOpened = lastOpenedStr ? parseInt(lastOpenedStr, 10) : 0;
+
+        // Force local unread check tracking explicitly to override DB RLS blocking
+        const unreadCount = chatMessages.filter(m => m.sender_id === profile.id && m.receiver_id === session.user.id && new Date(m.created_at).getTime() > lastOpened).length;
+
+        // Clear outdated 'last_read' we were using before to be safe
+        AsyncStorage.removeItem(`last_read_${session.user.id}_${profile.id}`).catch(()=>{});
 
         return {
           ...profile,
-          latestInteraction: latestMsg ? new Date(latestMsg.created_at).getTime() : 0,
+          latestInteraction,
           unreadCount
         };
       }));
@@ -116,17 +127,20 @@ export default function ChatListScreen() {
     // 5. Écoute globale des nouveaux messages pour incrémenter les "non lus"
     // et faire remonter immédiatement le profil en haut de la liste
     const syncUnreadCount = async (senderId: string) => {
-      const lastReadStr = await AsyncStorage.getItem(`last_read_${session.user.id}_${senderId}`);
-      const lastReadTime = lastReadStr ? parseInt(lastReadStr, 10) : 0;
-      
+      const lastOpenedStr = await AsyncStorage.getItem(`last_opened_${session.user.id}_${senderId}`);
+      const lastOpened = lastOpenedStr ? parseInt(lastOpenedStr, 10) : 0;
+
       const { count } = await supabase
         .from('messages')
         .select('*', { count: 'exact', head: true })
         .eq('sender_id', senderId)
         .eq('receiver_id', session.user.id)
-        .gt('created_at', new Date(lastReadTime).toISOString());
+        .gt('created_at', new Date(lastOpened).toISOString());
       
-      setUsers(prev => prev.map(u => u.id === senderId ? { ...u, unreadCount: count || 0, latestInteraction: new Date().getTime() } : u).sort((a, b) => b.latestInteraction - a.latestInteraction));
+      const now = new Date().getTime();
+      AsyncStorage.setItem(`last_interaction_${session.user.id}_${senderId}`, now.toString()).catch(()=>{});
+
+      setUsers(prev => prev.map(u => u.id === senderId ? { ...u, unreadCount: count || 0, latestInteraction: now } : u).sort((a, b) => b.latestInteraction - a.latestInteraction));
     };
 
     const globalMessagesChannel = supabase.channel('global-messages')
@@ -146,8 +160,9 @@ export default function ChatListScreen() {
   };
 
     const openChat = async (item: any) => {
-      // Efface immédiatement la pastille des non-lus en local et sauvegarde l'heure
-      await AsyncStorage.setItem(`last_read_${session?.user?.id}_${item.id}`, new Date().getTime().toString());
+      // Efface immédiatement la pastille des non-lus en local et sauvegarde l'heure d'interaction et d'ouverture
+      await AsyncStorage.setItem(`last_opened_${session?.user?.id}_${item.id}`, new Date().getTime().toString());
+      await AsyncStorage.setItem(`last_interaction_${session?.user?.id}_${item.id}`, new Date().getTime().toString());
       setUsers(prev => prev.map(u => u.id === item.id ? { ...u, unreadCount: 0 } : u));
 
       try {
@@ -220,11 +235,10 @@ export default function ChatListScreen() {
             <Shield size={24} color={Theme.colors.primary} />
             <Text style={styles.headerTitle}>Messages</Text>
           </View>
-          <TouchableOpacity onPress={handleLogout} style={styles.logoutBtn}>
-            <LogOut size={20} color={Theme.colors.error} />
-          </TouchableOpacity>
         </View>
-        <Text style={styles.welcomeText}>Welcome, {username || 'Secure User'}</Text>
+        <Text style={[styles.welcomeText, { fontFamily: 'GreatVibes_400Regular', fontSize: 26, color: Theme.colors.primary, marginTop: 4 }]}>
+          Bhildiamant
+        </Text>
       </View>
 
       <FlatList

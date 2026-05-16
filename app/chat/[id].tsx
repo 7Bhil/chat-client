@@ -9,6 +9,7 @@ import { getPrivateKey } from '../../utils/api';
 import { Send, Camera, Image as ImageIcon, Clock, X, Trash2 } from 'lucide-react-native';
 import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as ScreenCapture from 'expo-screen-capture';
 import { LoadingScreen } from '../../components/LoadingScreen';
 
 const EXPIRY_OPTIONS = [
@@ -42,11 +43,15 @@ export default function ChatDetailScreen() {
   const isInitiatingRef = useRef(false);
 
   useEffect(() => {
+    // Empêcher les captures d'écran sur cet écran confidentiel
+    ScreenCapture.preventScreenCaptureAsync().catch(console.warn);
+
     if (session?.user && id) {
       initChat();
     }
-    // Cleanup: unsubscribe from the channel when leaving the screen
+    // Cleanup: allow screenshots back when leaving, and unsubscribe
     return () => {
+      ScreenCapture.allowScreenCaptureAsync().catch(console.warn);
       if (channelRef.current) {
         supabase.removeChannel(channelRef.current);
         channelRef.current = null;
@@ -93,7 +98,7 @@ export default function ChatDetailScreen() {
       // 5. Subscribe to new messages (unsubscribe first if already subscribed)
       subscribeToMessages(sharedSecretRef.current, session.user.id);
 
-      // 6. Mark all as read
+      // 6. Try to delete fetched messages in fetchHistory, but mark them as read here as a reliable fallback
       await supabase.from('messages')
         .update({ is_read: true })
         .eq('receiver_id', session.user.id)
@@ -123,8 +128,26 @@ export default function ChatDetailScreen() {
 
     const decoded = await Promise.all(data.map(async (msg) => {
       try {
-        if (msg.expires_at && new Date(msg.expires_at) < new Date()) return null;
         const baseType = msg.type?.split(':')[0] || 'text';
+        const expiryStr = msg.type?.split(':')[1];
+        const expirySeconds = expiryStr ? parseInt(expiryStr, 10) : null;
+        
+        let localExpiresAt = msg.expires_at;
+
+        // If it's an ephemeral message without a hard server expiry date limit, calculate it locally
+        if (!localExpiresAt && expirySeconds) {
+            if (msg.sender_id === myUserId) {
+                // If I am the sender recovering history, timer started when I sent it
+                localExpiresAt = new Date(new Date(msg.created_at).getTime() + expirySeconds * 1000).toISOString();
+            } else {
+                // If I am the receiver, timer starts EXACTLY NOW because I just read it!
+                localExpiresAt = new Date(Date.now() + expirySeconds * 1000).toISOString();
+            }
+        }
+
+        // Drop if it has already expired
+        if (localExpiresAt && new Date(localExpiresAt).getTime() < Date.now()) return null;
+
         const isImage = baseType === 'image' || baseType === 'image-once';
         
         const content = isImage
@@ -133,15 +156,16 @@ export default function ChatDetailScreen() {
 
         if (!content) {
           console.warn(`[Crypto] ❌ Decryption FAILED for message ${msg.id}. Sent by: ${msg.sender_id === myUserId ? 'Me' : 'Them'}`);
+          return null;
         }
 
         return {
           id: msg.id,
-          text: content ?? '[🔒 Clés désynchronisées]',
+          text: content,
           type: msg.type,
           sender: msg.sender_id === myUserId ? 'me' : 'other',
           timestamp: msg.created_at,
-          expiresAt: msg.expires_at,
+          expiresAt: localExpiresAt,
         };
       } catch (e) {
         console.error('[Crypto] Exception decrypt msg', msg.id, e);
@@ -149,7 +173,30 @@ export default function ChatDetailScreen() {
       }
     }));
 
-    setMessages(decoded.filter(Boolean) as any[]);
+    const validRemote = decoded.filter(Boolean) as any[];
+
+    // Read local messages
+    const localData = await AsyncStorage.getItem(`chat_${myUserId}_${id}`);
+    const localMessages = localData ? JSON.parse(localData) : [];
+
+    // Merge and deduplicate
+    const allMessagesMap = new Map();
+    [...localMessages, ...validRemote].forEach(m => allMessagesMap.set(m.id, m));
+    const mergedMessages = Array.from(allMessagesMap.values()).sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+    setMessages(mergedMessages);
+    // Save locally
+    if (mergedMessages.length > 0) {
+      await AsyncStorage.setItem(`chat_${myUserId}_${id}`, JSON.stringify(mergedMessages));
+      await AsyncStorage.setItem(`last_interaction_${myUserId}_${id}`, new Date().getTime().toString()).catch(()=>{});
+    }
+
+    // Completely delete fetched remote messages from database
+    const remoteReceivedIds = data.filter(m => m.receiver_id === myUserId).map(m => m.id);
+    if (remoteReceivedIds.length > 0) {
+      await supabase.from('messages').update({ is_read: true }).in('id', remoteReceivedIds);
+      await supabase.from('messages').delete().in('id', remoteReceivedIds);
+    }
   };
 
   const subscribeToMessages = (secret: Uint8Array, myUserId: string) => {
@@ -175,15 +222,29 @@ export default function ChatDetailScreen() {
               : await decryptText(payload.new.encrypted_content, payload.new.nonce, secret);
 
             if (content) {
-              setMessages(prev => [...prev, {
+              const expiryStr = payload.new.type?.split(':')[1];
+              const expirySeconds = expiryStr ? parseInt(expiryStr, 10) : null;
+              const localExpiresAt = expirySeconds ? new Date(Date.now() + expirySeconds * 1000).toISOString() : payload.new.expires_at;
+
+              const newMsg = {
                 id: payload.new.id,
                 text: content,
                 type: payload.new.type,
                 sender: 'other',
                 timestamp: payload.new.created_at,
-                expiresAt: payload.new.expires_at,
-              }]);
+                expiresAt: localExpiresAt,
+              };
+
+              setMessages(prev => {
+                const updated = [...prev, newMsg];
+                AsyncStorage.setItem(`chat_${myUserId}_${id}`, JSON.stringify(updated)).catch(()=>{});
+                AsyncStorage.setItem(`last_interaction_${myUserId}_${id}`, new Date().getTime().toString()).catch(()=>{});
+                return updated;
+              });
+              
+              // Delete from Supabase once received, but mark as read first
               await supabase.from('messages').update({ is_read: true }).eq('id', payload.new.id);
+              await supabase.from('messages').delete().eq('id', payload.new.id);
             } else {
               console.warn('[Crypto] RT decrypt failed for incoming msg', payload.new.id);
             }
@@ -230,26 +291,27 @@ export default function ChatDetailScreen() {
         nonce,
         type: typeStr,
         is_read: false,
-        expires_at: expiry ? new Date(Date.now() + expiry * 1000).toISOString() : null,
+        expires_at: null, // Keep null in DB so it doesn't expire before the receiver sees it
       }).select().single();
 
       if (error) throw error;
 
-      setMessages(prev => [...prev, {
+      const newMsg = {
         id: data.id,
         text: content,
         type: typeStr,
         sender: 'me',
         timestamp: data.created_at,
-        expiresAt: data.expires_at,
-      }]);
-      setMessage('');
+        expiresAt: expiry ? new Date(Date.now() + expiry * 1000).toISOString() : null, // Set locale expiry for sender
+      };
 
-      // Mark received messages as read when replying
-      supabase.from('messages').update({ is_read: true })
-        .eq('receiver_id', session.user.id)
-        .eq('sender_id', id)
-        .then();
+      setMessages(prev => {
+         const updated = [...prev, newMsg];
+         AsyncStorage.setItem(`chat_${session.user.id}_${id}`, JSON.stringify(updated)).catch(()=>{});
+         AsyncStorage.setItem(`last_interaction_${session.user.id}_${id}`, new Date().getTime().toString()).catch(()=>{});
+         return updated;
+      });
+      setMessage('');
     } catch (err) {
       Alert.alert('Error', 'Failed to send message');
     }
@@ -280,7 +342,10 @@ export default function ChatDetailScreen() {
           style: 'destructive',
           onPress: async () => {
             if (!session?.user) return;
-            // Delete all messages between the two users
+            // Delete locally as well
+            await AsyncStorage.removeItem(`chat_${session.user.id}_${id}`);
+            
+            // Delete remote
             await supabase.from('messages').delete()
               .or(`and(sender_id.eq.${session.user.id},receiver_id.eq.${id}),and(sender_id.eq.${id},receiver_id.eq.${session.user.id})`);
             setMessages([]);
@@ -420,13 +485,13 @@ const styles = StyleSheet.create({
     maxWidth: '80%', padding: Theme.spacing.md, borderRadius: Theme.borderRadius.lg,
     marginBottom: Theme.spacing.md,
   },
-  myMessage: { alignSelf: 'flex-end', backgroundColor: Theme.colors.primary + '30', borderBottomRightRadius: 0 },
+  myMessage: { alignSelf: 'flex-end', backgroundColor: '#007AFF', borderBottomRightRadius: 0 },
   otherMessage: { alignSelf: 'flex-start', backgroundColor: Theme.colors.surface, borderBottomLeftRadius: 0 },
   lockedMessage: { opacity: 0.5, borderWidth: 1, borderColor: Theme.colors.border, borderStyle: 'dashed' },
-  messageText: { color: Theme.colors.text, fontSize: 16 },
+  messageText: { color: '#FFFFFF', fontSize: 16 },
   lockedText: { color: Theme.colors.textSecondary, fontSize: 13, fontStyle: 'italic' },
   messageImage: { width: 200, height: 200, borderRadius: Theme.borderRadius.md },
-  messageTime: { fontSize: 10, color: Theme.colors.textSecondary, alignSelf: 'flex-end', marginTop: 4 },
+  messageTime: { fontSize: 10, color: 'rgba(255,255,255,0.7)', alignSelf: 'flex-end', marginTop: 4 },
   inputArea: {
     flexDirection: 'row', alignItems: 'center',
     padding: Theme.spacing.md, borderTopWidth: 1,

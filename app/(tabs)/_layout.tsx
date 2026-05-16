@@ -1,7 +1,7 @@
 import { Tabs } from 'expo-router';
 import React from 'react';
 import { Theme } from '../../constants/theme';
-import { MessageSquare, Settings, Shield } from 'lucide-react-native';
+import { MessageSquare, Settings, User } from 'lucide-react-native';
 
 export default function TabLayout() {
   return (
@@ -29,8 +29,8 @@ export default function TabLayout() {
       <Tabs.Screen
         name="explore"
         options={{
-          title: 'Security',
-          tabBarIcon: ({ color }) => <Shield size={24} color={color} />,
+          title: 'Profile',
+          tabBarIcon: ({ color }) => <User size={24} color={color} />,
         }}
       />
     </Tabs>
